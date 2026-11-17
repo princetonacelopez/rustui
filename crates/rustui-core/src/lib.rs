@@ -7,11 +7,11 @@ pub mod types;
 pub mod view;
 
 pub use node::{
-    AccessibilityNodeData, CachedLayout, CanvasNodeData, ContainerKind, ControlNodeData,
-    DirtyFlags, DynamicNodeData, Environment, EventHandlers, FocusNodeData, FontSpec, FontWeight,
-    GridTrack, HookSlot, ImageNodeData, ImageSourceData, LayoutProps, LayoutValueMap, Node,
-    NodeAnimation, NodeId, NodeKind, ScrollAxes, ScrollNodeData, ShaderNodeData, TextNodeData,
-    TextSpanData, TruncationMode, VirtualListNodeData, VisualProps,
+    AccessibilityNodeData, CachedLayout, CanvasNodeData, CanvasPaintFn, ContainerKind,
+    ControlNodeData, DirtyFlags, DynamicNodeData, Environment, EventHandlers, FocusNodeData,
+    FontSpec, FontWeight, GridTrack, HookSlot, ImageNodeData, ImageSourceData, LayoutProps,
+    LayoutValueMap, Node, NodeAnimation, NodeId, NodeKind, ScrollAxes, ScrollNodeData,
+    ShaderNodeData, TextNodeData, TextSpanData, TruncationMode, VirtualListNodeData, VisualProps,
 };
 pub use scheduler::{with_animation, AnimProperty, AnimValue, FrameMetrics, Scheduler};
 pub use signal::{Binding, EffectHandle, Memo, Observable, Runtime, RuntimeInner, State, TaskSender};
