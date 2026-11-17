@@ -14,17 +14,18 @@ pub mod prelude {
         CornerRadii, Cx, DragEvent, Edge, Edges, EffectHandle, EmptyView, ForEach, Frame,
         GridTrack, HorizontalAlignment, If, KeyCode, KeyEvent, Memo, Modifiers, NodeId, Observable,
         PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Primitive, Rect, Runtime,
-        ScrollEvent, SemanticColor, Size, State, Switch, TextDirection, Transition,
+        ScrollEvent, SemanticColor, Size, State, Switch, TextDirection, ThemePalette, Transition,
         VerticalAlignment, View, ViewExt, ViewSequence, impl_observable, rustui_check_hooks,
         with_animation,
     };
     pub use rustui_layout::{ChildProxy, Children, Layout, LayoutEngine};
     pub use rustui_platform::{
         DesktopPlatform, FrameSummary, HeadlessSimulator, Platform, SystemTheme, WindowOptions,
-        detect_platform_capabilities,
+        detect_platform_capabilities, detect_reduced_motion, detect_system_theme,
     };
     pub use rustui_render::{
-        DisplayList, FontBlob, InspectorOverlay, ResourceLoader, include_asset,
+        DisplayList, FontBlob, GradientKind, GradientStop, InspectorOverlay, PathOp,
+        ResourceLoader, include_asset,
     };
     pub use rustui_text::{
         EditableText, ImeState, RichText, Selection, TextBuffer, TextSpan, TextSystem,
@@ -95,13 +96,21 @@ impl App {
             }
         }
 
+        let theme = match rustui_platform::detect_system_theme() {
+            SystemTheme::Dark => Theme::dark(),
+            SystemTheme::Light => Theme::light(),
+        };
+        let runtime = Runtime::new();
+        runtime.set_reduced_motion(rustui_platform::detect_reduced_motion());
         let opts = WindowOptions {
             inspector,
+            clear_color: theme.colors.background,
+            follow_os_theme: true,
             ..Default::default()
         };
 
         Self {
-            runtime: Runtime::new(),
+            runtime,
             windows: vec![PendingWindow {
                 options: opts,
                 builder: Box::new(move |cx, theme| {
@@ -109,7 +118,7 @@ impl App {
                     root.environment(theme).environment(palette).build_node(cx)
                 }),
             }],
-            theme: Theme::light(),
+            theme,
             headless,
             inspector,
             snapshot_path,
@@ -159,6 +168,7 @@ impl App {
     pub fn theme(mut self, theme: Theme) -> Self {
         if let Some(w) = self.windows.first_mut() {
             w.options.clear_color = theme.colors.background;
+            w.options.follow_os_theme = false;
         }
         self.theme = theme;
         self

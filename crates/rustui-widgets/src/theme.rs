@@ -234,11 +234,11 @@ impl ButtonStyle {
         let standard = theme.uses_default_palette();
         Self {
             background: if standard {
-                Color::surface()
+                Color::surface_elevated()
             } else {
-                theme.colors.surface
+                theme.colors.surface_elevated
             },
-            hover_background: theme.colors.surface_elevated,
+            hover_background: theme.colors.surface,
             pressed_background: theme.colors.border,
             foreground: if standard {
                 Color::primary()
@@ -253,6 +253,24 @@ impl ButtonStyle {
                     theme.colors.border
                 },
             )),
+            corner_radius: theme.radius_md,
+            padding: Edges::symmetric(8.0, 14.0),
+            custom_decorator: None,
+        }
+    }
+
+    pub fn destructive(theme: &Theme) -> Self {
+        let standard = theme.uses_default_palette();
+        Self {
+            background: if standard {
+                Color::destructive()
+            } else {
+                theme.colors.destructive
+            },
+            hover_background: theme.colors.destructive.lerp(Color::WHITE, 0.12),
+            pressed_background: theme.colors.destructive.lerp(Color::BLACK, 0.15),
+            foreground: theme.colors.on_accent,
+            border: None,
             corner_radius: theme.radius_md,
             padding: Edges::symmetric(8.0, 14.0),
             custom_decorator: None,

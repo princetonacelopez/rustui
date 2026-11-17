@@ -411,6 +411,10 @@ impl Primitive for Toggle {
             if let Some(n) = inner.nodes.get_mut(switch_node) {
                 n.layout_props.frame = Some(Frame::fixed(44.0, 24.0));
                 n.visual_props.corner_radii = CornerRadii::all(12.0);
+                n.animation = Some(rustui_core::NodeAnimation {
+                    animation: rustui_core::Animation::ease_out(0.14),
+                    transition: None,
+                });
                 n.focus.focusable = true;
                 n.accessibility.role = AccessibilityRole::Switch;
                 n.accessibility.label = Some(label_str);
@@ -452,6 +456,10 @@ impl Primitive for Toggle {
                 k.layout_props.frame = Some(Frame::fixed(18.0, 18.0));
                 k.visual_props.background = Some(style.knob_color);
                 k.visual_props.corner_radii = CornerRadii::all(9.0);
+                k.animation = Some(rustui_core::NodeAnimation {
+                    animation: rustui_core::Animation::ease_out(0.14),
+                    transition: None,
+                });
                 k.visual_props.shadow = Some(rustui_core::BoxShadow {
                     color: Color::rgba(0.0, 0.0, 0.0, 0.18),
                     offset: Point::new(0.0, 1.0),

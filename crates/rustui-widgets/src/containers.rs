@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use rustui_core::{
     AccessibilityRole, Alignment, AnyView, Binding, BuildCx, Color, ContainerKind, Cx, DirtyFlags,
-    Edge, Edges, EmptyView, Frame, HorizontalAlignment, If, NodeId, NodeKind, Point, Primitive,
-    Rect, Size, Transition, VerticalAlignment, View, ViewExt,
+    Edges, EmptyView, Frame, HorizontalAlignment, If, NodeId, NodeKind, Point, Primitive, Rect,
+    Size, Transition, VerticalAlignment, View, ViewExt,
 };
 use rustui_layout::{Children, CustomLayoutBox, Layout};
 
@@ -75,6 +75,7 @@ impl Primitive for NavigationStack {
                         .max_height(f32::INFINITY)
                         .alignment(Alignment::TOP_LEADING),
                 );
+                n.visual_props.clip_to_bounds = true;
                 n.accessibility.role = AccessibilityRole::Navigation;
                 n.accessibility.label = Some("NavigationStack".into());
             }
@@ -130,7 +131,13 @@ impl Primitive for NavigationStack {
         let mut sw = rustui_core::Switch::new(move || depth_for_switch.get().min(pages_len - 1));
         for (i, page) in pages.iter().enumerate() {
             let b = page.builder.clone();
-            sw = sw.case(i, move || b().transition(Transition::Move(Edge::Trailing)));
+            sw = sw.case(i, move || {
+                if i == 0 {
+                    b()
+                } else {
+                    b().transition(Transition::Opacity).into_any()
+                }
+            });
         }
         cx.build_child(root, sw);
         root
