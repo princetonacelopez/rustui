@@ -104,7 +104,10 @@ impl App {
             runtime: Runtime::new(),
             windows: vec![PendingWindow {
                 options: opts,
-                builder: Box::new(move |cx, theme| root.environment(theme).build_node(cx)),
+                builder: Box::new(move |cx, theme| {
+                    let palette = theme.to_palette();
+                    root.environment(theme).environment(palette).build_node(cx)
+                }),
             }],
             theme: Theme::light(),
             headless,
@@ -144,7 +147,10 @@ impl App {
         options.inspector |= self.inspector;
         self.windows.push(PendingWindow {
             options,
-            builder: Box::new(move |cx, theme| view.environment(theme).build_node(cx)),
+            builder: Box::new(move |cx, theme| {
+                let palette = theme.to_palette();
+                view.environment(theme).environment(palette).build_node(cx)
+            }),
         });
         self
     }

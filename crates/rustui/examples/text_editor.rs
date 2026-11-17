@@ -23,6 +23,51 @@ impl View for TextEditorApp {
             format!("{lines} lines · {words} words · {chars} chars")
         });
 
+        let make_tree = move |is_expanded: bool| {
+            Tree::new(
+                vec![TreeItemData {
+                    id: "root".into(),
+                    label: "docs".into(),
+                    expanded: is_expanded,
+                    children: vec![
+                        TreeItemData {
+                            id: "readme".into(),
+                            label: "README.md".into(),
+                            expanded: false,
+                            children: vec![],
+                        },
+                        TreeItemData {
+                            id: "guide".into(),
+                            label: "GUIDE.md".into(),
+                            expanded: false,
+                            children: vec![],
+                        },
+                    ],
+                }],
+                move |id| match id {
+                    "root" => expanded.update(|e| *e = !*e),
+                    "readme" => {
+                        selected_doc.set("README.md".into());
+                        content.set(
+                            "# RustUI Notes\n\nWrite Unicode, 日本語, 中文, and emoji 🚀 here.\n\
+                             Supports rope-backed undo/redo, grapheme cursor navigation, and IME composition."
+                                .into(),
+                        );
+                    }
+                    "guide" => {
+                        selected_doc.set("GUIDE.md".into());
+                        content.set(
+                            "# RustUI Developer Guide\n\n- State<T> hooks with cx.state(init)\n\
+                             - Proposal/response Stack, Grid, and SplitView layouts\n\
+                             - AccessKit screen reader bridge"
+                                .into(),
+                        );
+                    }
+                    _ => {}
+                },
+            )
+        };
+
         VStack::new(
             0,
             (
@@ -41,42 +86,19 @@ impl View for TextEditorApp {
                         8,
                         (
                             Text::new("Workspace").font(Font::headline()),
-                            If::new(
-                                move || expanded.get(),
-                                move || {
-                                    Tree::new(
-                                        vec![TreeItemData {
-                                            id: "root".into(),
-                                            label: "docs".into(),
-                                            expanded: true,
-                                            children: vec![
-                                                TreeItemData {
-                                                    id: "readme".into(),
-                                                    label: "README.md".into(),
-                                                    expanded: false,
-                                                    children: vec![],
-                                                },
-                                                TreeItemData {
-                                                    id: "guide".into(),
-                                                    label: "GUIDE.md".into(),
-                                                    expanded: false,
-                                                    children: vec![],
-                                                },
-                                            ],
-                                        }],
-                                        move |id| {
-                                            if id == "root" {
-                                                expanded.update(|e| *e = !*e);
-                                            } else {
-                                                selected_doc.set(id.to_owned());
-                                            }
-                                        },
-                                    )
-                                },
-                            ),
+                            If::new(move || expanded.get(), move || make_tree(true))
+                                .else_view(move || make_tree(false)),
                         ),
                     )
-                    .padding(10),
+                    .alignment(HorizontalAlignment::Leading)
+                    .padding(12)
+                    .frame(
+                        Frame::new()
+                            .max_width(f32::INFINITY)
+                            .max_height(f32::INFINITY)
+                            .alignment(Alignment::TOP_LEADING),
+                    )
+                    .background(Color::surface()),
                     VStack::new(
                         8,
                         (
@@ -95,9 +117,22 @@ impl View for TextEditorApp {
                             ),
                         ),
                     )
-                    .padding(12),
+                    .alignment(HorizontalAlignment::Leading)
+                    .padding(12)
+                    .frame(
+                        Frame::new()
+                            .max_width(f32::INFINITY)
+                            .max_height(f32::INFINITY)
+                            .alignment(Alignment::TOP_LEADING),
+                    ),
                 ),
             ),
+        )
+        .frame(
+            Frame::new()
+                .max_width(f32::INFINITY)
+                .max_height(f32::INFINITY)
+                .alignment(Alignment::TOP_LEADING),
         )
     }
 }

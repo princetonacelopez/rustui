@@ -95,6 +95,27 @@ impl Default for Theme {
 }
 
 impl Theme {
+    pub fn to_palette(&self) -> rustui_core::ThemePalette {
+        rustui_core::ThemePalette {
+            is_dark: self.is_dark,
+            primary: self.colors.primary,
+            secondary: self.colors.secondary,
+            background: self.colors.background,
+            surface: self.colors.surface,
+            surface_elevated: self.colors.surface_elevated,
+            accent: self.colors.accent,
+            on_accent: self.colors.on_accent,
+            border: self.colors.border,
+            destructive: self.colors.destructive,
+            success: self.colors.success,
+            warning: self.colors.warning,
+        }
+    }
+
+    pub(crate) fn uses_default_palette(&self) -> bool {
+        self.colors == Self::light().colors || self.colors == Self::dark().colors
+    }
+
     pub fn light() -> Self {
         Self {
             is_dark: false,
@@ -192,8 +213,13 @@ impl std::fmt::Debug for ButtonStyle {
 
 impl ButtonStyle {
     pub fn primary(theme: &Theme) -> Self {
+        let standard = theme.uses_default_palette();
         Self {
-            background: theme.colors.accent,
+            background: if standard {
+                Color::accent()
+            } else {
+                theme.colors.accent
+            },
             hover_background: theme.colors.accent.lerp(Color::WHITE, 0.12),
             pressed_background: theme.colors.accent.lerp(Color::BLACK, 0.15),
             foreground: theme.colors.on_accent,
@@ -205,12 +231,28 @@ impl ButtonStyle {
     }
 
     pub fn secondary(theme: &Theme) -> Self {
+        let standard = theme.uses_default_palette();
         Self {
-            background: theme.colors.surface,
+            background: if standard {
+                Color::surface()
+            } else {
+                theme.colors.surface
+            },
             hover_background: theme.colors.surface_elevated,
             pressed_background: theme.colors.border,
-            foreground: theme.colors.primary,
-            border: Some((1.0, theme.colors.border)),
+            foreground: if standard {
+                Color::primary()
+            } else {
+                theme.colors.primary
+            },
+            border: Some((
+                1.0,
+                if standard {
+                    Color::border()
+                } else {
+                    theme.colors.border
+                },
+            )),
             corner_radius: theme.radius_md,
             padding: Edges::symmetric(8.0, 14.0),
             custom_decorator: None,
@@ -218,11 +260,16 @@ impl ButtonStyle {
     }
 
     pub fn plain(theme: &Theme) -> Self {
+        let standard = theme.uses_default_palette();
         Self {
             background: Color::TRANSPARENT,
             hover_background: theme.colors.surface,
             pressed_background: theme.colors.border,
-            foreground: theme.colors.accent,
+            foreground: if standard {
+                Color::accent()
+            } else {
+                theme.colors.accent
+            },
             border: None,
             corner_radius: theme.radius_sm,
             padding: Edges::symmetric(6.0, 10.0),
@@ -242,11 +289,24 @@ pub struct ToggleStyle {
 
 impl ToggleStyle {
     pub fn from_theme(theme: &Theme) -> Self {
+        let standard = theme.uses_default_palette();
         Self {
-            on_track: theme.colors.accent,
-            off_track: theme.colors.border,
+            on_track: if standard {
+                Color::accent()
+            } else {
+                theme.colors.accent
+            },
+            off_track: if standard {
+                Color::border()
+            } else {
+                theme.colors.border
+            },
             knob_color: Color::WHITE,
-            label_color: theme.colors.primary,
+            label_color: if standard {
+                Color::primary()
+            } else {
+                theme.colors.primary
+            },
         }
     }
 }
@@ -263,10 +323,23 @@ pub struct ListStyle {
 
 impl ListStyle {
     pub fn from_theme(theme: &Theme) -> Self {
+        let standard = theme.uses_default_palette();
         Self {
-            row_background: theme.colors.surface_elevated,
-            alternate_row_background: Some(theme.colors.surface),
-            selected_background: theme.colors.accent.with_alpha(0.18),
+            row_background: if standard {
+                Color::surface_elevated()
+            } else {
+                theme.colors.surface_elevated
+            },
+            alternate_row_background: Some(if standard {
+                Color::surface()
+            } else {
+                theme.colors.surface
+            }),
+            selected_background: if standard {
+                Color::accent().with_alpha(0.18)
+            } else {
+                theme.colors.accent.with_alpha(0.18)
+            },
             corner_radii: CornerRadii::all(theme.radius_sm),
             row_height: 36.0,
         }

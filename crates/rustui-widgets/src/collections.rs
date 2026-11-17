@@ -4,12 +4,12 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 
 use rustui_core::{
-    AccessibilityRole, AnyView, Binding, BuildCx, ContainerKind, CornerRadii, Cx, DirtyFlags,
-    Edges, EmptyView, Frame, GridTrack, HorizontalAlignment, IntoPx, NodeId, NodeKind, Primitive,
-    ScrollAxes, ScrollNodeData, View, ViewExt, VirtualListNodeData,
+    AccessibilityRole, Alignment, AnyView, Binding, BuildCx, Color, ContainerKind, CornerRadii, Cx,
+    DirtyFlags, Edges, EmptyView, Frame, GridTrack, HorizontalAlignment, IntoPx, NodeId, NodeKind,
+    Primitive, ScrollAxes, ScrollNodeData, View, ViewExt, VirtualListNodeData,
 };
 
-use crate::core_widgets::{Button, Divider, HStack, Text};
+use crate::core_widgets::{Button, Divider, HStack, Spacer, Text};
 use crate::theme::{ButtonStyle, Font, ListStyle, Theme};
 
 fn resolve_theme(cx: &BuildCx) -> Theme {
@@ -222,7 +222,9 @@ pub fn format_virtual_row_text(node: &mut rustui_core::Node, prefix: &str, row_i
     if let NodeKind::Text(t) = &mut node.kind {
         t.text.clear();
         let _ = write!(&mut t.text, "{prefix}{row_idx}");
-        node.dirty.insert(DirtyFlags::PAINT);
+        node.accessibility.label = Some(t.text.clone());
+        node.dirty
+            .insert(DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
     }
 }
 
@@ -269,29 +271,39 @@ impl<Item: Clone + 'static> Primitive for List<Item> {
         let row_builder = self.row_builder;
 
         let count = items.len();
+        let rt = cx.runtime.clone();
         LazyVStack::new(count, row_h, move |idx| {
-            let is_sel = sel_b.get() == Some(idx);
-            let bg = if is_sel {
-                style.selected_background
-            } else if idx % 2 == 1 {
+            let is_sel = rt.enter(|| sel_b.get() == Some(idx));
+            let normal_bg = if idx % 2 == 1 {
                 style
                     .alternate_row_background
                     .unwrap_or(style.row_background)
             } else {
                 style.row_background
             };
+            let selected_bg = style.selected_background;
             let item = items[idx].clone();
             let sel_click = sel_b.clone();
+            let sel_bg = sel_b.clone();
             let content = (row_builder)(idx, &item, is_sel);
 
-            let mut row = rustui_core::ViewExt::padding(content, Edges::symmetric(6.0, 10.0))
-                .background(bg)
+            rustui_core::ViewExt::padding(content, Edges::symmetric(6.0, 10.0))
+                .frame(
+                    Frame::new()
+                        .max_width(f32::INFINITY)
+                        .alignment(Alignment::LEADING),
+                )
+                .background_reactive(move || {
+                    if sel_bg.get() == Some(idx) {
+                        selected_bg
+                    } else {
+                        normal_bg
+                    }
+                })
                 .corner_radius(style.corner_radii.top_left)
                 .on_tap(move || sel_click.set(Some(idx)))
                 .focusable()
-                .accessibility_role(AccessibilityRole::ListItem);
-            let _ = &mut row;
-            row
+                .accessibility_role(AccessibilityRole::ListItem)
         })
         .build_node(cx)
     }
@@ -367,13 +379,35 @@ impl Table {
 impl Primitive for Table {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let theme = resolve_theme(cx);
+        let standard = theme.uses_default_palette();
+        let border_col = if standard {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
+        let surface_col = if standard {
+            Color::surface()
+        } else {
+            theme.colors.surface
+        };
+        let surface_elevated = if standard {
+            Color::surface_elevated()
+        } else {
+            theme.colors.surface_elevated
+        };
+        let accent_sel = if standard {
+            Color::accent().with_alpha(0.15)
+        } else {
+            theme.colors.accent.with_alpha(0.15)
+        };
+
         let root = cx.alloc_node(NodeKind::Container(ContainerKind::VStack {
             spacing: 0.0,
             alignment: HorizontalAlignment::Leading,
         }));
         cx.runtime.with_inner_mut(|inner| {
             if let Some(n) = inner.nodes.get_mut(root) {
-                n.visual_props.border = Some((1.0, theme.colors.border));
+                n.visual_props.border = Some((1.0, border_col));
                 n.visual_props.corner_radii = CornerRadii::all(theme.radius_md);
                 n.visual_props.clip_to_bounds = true;
                 n.accessibility.role = AccessibilityRole::Table;
@@ -381,44 +415,43 @@ impl Primitive for Table {
             }
         });
 
-        let header_cells: Vec<AnyView> = self
+        let col_width = |track: GridTrack| -> f32 {
+            match track {
+                GridTrack::Fixed(w) => w,
+                GridTrack::Flexible { min, max } => max.min(220.0).max(min),
+            }
+        };
+
+        let mut header_cells: Vec<AnyView> = self
             .columns
             .iter()
             .map(|c| {
-                let w = match c.track {
-                    GridTrack::Fixed(w) => w,
-                    GridTrack::Flexible { min, .. } => min.max(100.0),
-                };
+                let w = col_width(c.track);
                 AnyView::new(rustui_core::ViewExt::accessibility_role(
                     rustui_core::ViewExt::frame(
                         rustui_core::ViewExt::padding(
                             Text::new(c.title.clone()).font(Font::headline()),
                             Edges::symmetric(6.0, 10.0),
                         ),
-                        Frame::new().width(w),
+                        Frame::new().width(w).alignment(Alignment::LEADING),
                     ),
                     AccessibilityRole::TableColumnHeader,
                 ))
             })
             .collect();
-        let header =
-            rustui_core::ViewExt::background(HStack::new(0, header_cells), theme.colors.surface);
+        header_cells.push(AnyView::new(Spacer::new()));
+        let header = rustui_core::ViewExt::background(HStack::new(0, header_cells), surface_col);
         cx.build_child(root, header);
         cx.build_child(root, Divider::new());
 
         let cols = Rc::new(self.columns);
         let cell_fn = self.cell_text;
         let sel_b = self.selected;
-        let surface_elevated = theme.colors.surface_elevated;
-        let accent_sel = theme.colors.accent.with_alpha(0.15);
 
         let body = LazyVStack::new(self.row_count, self.row_height, move |row_idx| {
-            let cells: Vec<AnyView> = (0..cols.len())
+            let mut cells: Vec<AnyView> = (0..cols.len())
                 .map(|col_idx| {
-                    let w = match cols[col_idx].track {
-                        GridTrack::Fixed(w) => w,
-                        GridTrack::Flexible { min, .. } => min.max(100.0),
-                    };
+                    let w = col_width(cols[col_idx].track);
                     let txt = (cell_fn)(row_idx, col_idx);
                     AnyView::new(rustui_core::ViewExt::accessibility_role(
                         rustui_core::ViewExt::frame(
@@ -426,21 +459,24 @@ impl Primitive for Table {
                                 Text::new(txt),
                                 Edges::symmetric(4.0, 10.0),
                             ),
-                            Frame::new().width(w),
+                            Frame::new().width(w).alignment(Alignment::LEADING),
                         ),
                         AccessibilityRole::TableCell,
                     ))
                 })
                 .collect();
+            cells.push(AnyView::new(Spacer::new()));
             let sel_click = sel_b.clone();
-            let bg = if sel_b.get() == Some(row_idx) {
-                accent_sel
-            } else {
-                surface_elevated
-            };
+            let sel_bg = sel_b.clone();
             rustui_core::ViewExt::accessibility_role(
                 rustui_core::ViewExt::on_tap(
-                    rustui_core::ViewExt::background(HStack::new(0, cells), bg),
+                    rustui_core::ViewExt::background_reactive(HStack::new(0, cells), move || {
+                        if sel_bg.get() == Some(row_idx) {
+                            accent_sel
+                        } else {
+                            surface_elevated
+                        }
+                    }),
                     move || sel_click.set(Some(row_idx)),
                 ),
                 AccessibilityRole::TableRow,
@@ -518,16 +554,18 @@ impl Primitive for Tree {
             } else {
                 "▸"
             };
-            let id_c = item.id.clone();
-            let toggle = self.on_toggle.clone();
+            let id_btn = item.id.clone();
+            let id_lbl = item.id;
+            let toggle_btn = self.on_toggle.clone();
+            let toggle_lbl = self.on_toggle.clone();
             let row = rustui_core::ViewExt::accessibility_role(
                 rustui_core::ViewExt::padding(
                     HStack::new(
                         6,
                         (
-                            Button::new(glyph, move || toggle(&id_c))
+                            Button::new(glyph, move || toggle_btn(&id_btn))
                                 .style(ButtonStyle::plain(&theme)),
-                            Text::new(item.label),
+                            Text::new(item.label).on_tap(move || toggle_lbl(&id_lbl)),
                         ),
                     ),
                     Edges::new(2.0, 6.0, 2.0, indent),

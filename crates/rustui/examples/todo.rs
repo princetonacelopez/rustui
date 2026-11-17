@@ -131,15 +131,31 @@ impl View for TodoApp {
                                     }),
                                 ),
                             )
-                            .padding(Edges::symmetric(4.0, 8.0))
-                            .background(Color::surface())
-                            .corner_radius(6)
+                            .padding(Edges::symmetric(6.0, 10.0))
+                            .background(Color::surface_elevated())
+                            .border(1, Color::border())
+                            .corner_radius(8)
                         },
                     ),
                 )),
             ),
         )
+        .alignment(HorizontalAlignment::Leading)
         .padding(16)
+        .frame(
+            Frame::new()
+                .max_width(f32::INFINITY)
+                .max_height(f32::INFINITY)
+                .alignment(Alignment::TOP_LEADING),
+        )
+        .background(Color::background())
+        .environment_reactive(move || {
+            if dark.get() {
+                Theme::dark().to_palette()
+            } else {
+                Theme::light().to_palette()
+            }
+        })
     }
 }
 

@@ -92,7 +92,13 @@ impl Text {
 impl Primitive for Text {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let theme = resolve_theme(cx);
-        let color = theme.resolve(self.color.unwrap_or(theme.colors.primary));
+        let color = self.color.unwrap_or_else(|| {
+            if theme.uses_default_palette() {
+                Color::primary()
+            } else {
+                theme.colors.primary
+            }
+        });
         let data = TextNodeData {
             text: match &self.source {
                 TextSource::Static(s) => s.clone(),
@@ -304,6 +310,17 @@ impl Primitive for Button {
         cx.runtime.with_inner_mut(|inner| {
             if let Some(n) = inner.nodes.get_mut(node) {
                 n.layout_props.padding = style.padding;
+                n.layout_props.frame = Some(if style.background.a <= 0.01 {
+                    Frame::new()
+                        .min_width(24.0)
+                        .min_height(26.0)
+                        .alignment(Alignment::CENTER)
+                } else {
+                    Frame::new()
+                        .min_width(36.0)
+                        .min_height(34.0)
+                        .alignment(Alignment::CENTER)
+                });
                 n.visual_props.background = Some(if disabled {
                     style.background.with_alpha(0.45)
                 } else {
@@ -385,6 +402,7 @@ impl Primitive for Toggle {
         let toggle_fn = Rc::new(move || {
             toggle_b.update(|v| *v = !*v);
         });
+        let lbl_toggle = toggle_fn.clone();
         let key_fn = toggle_fn.clone();
         let set_b = self.is_on.clone();
         let label_str = self.label.clone();
@@ -434,6 +452,11 @@ impl Primitive for Toggle {
                 k.layout_props.frame = Some(Frame::fixed(18.0, 18.0));
                 k.visual_props.background = Some(style.knob_color);
                 k.visual_props.corner_radii = CornerRadii::all(9.0);
+                k.visual_props.shadow = Some(rustui_core::BoxShadow {
+                    color: Color::rgba(0.0, 0.0, 0.0, 0.18),
+                    offset: Point::new(0.0, 1.0),
+                    blur_radius: 2.0,
+                });
             }
         });
         cx.runtime.register_node_updater(
@@ -449,6 +472,11 @@ impl Primitive for Toggle {
         let lbl = Text::new(self.label)
             .color(style.label_color)
             .build_node(cx);
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(l) = inner.nodes.get_mut(lbl) {
+                l.events.on_tap = Some(lbl_toggle);
+            }
+        });
         cx.runtime.attach_child(row, switch_node);
         cx.runtime.attach_child(row, lbl);
         row
@@ -499,7 +527,13 @@ impl Divider {
 impl Primitive for Divider {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let theme = resolve_theme(cx);
-        let c = theme.resolve(self.color.unwrap_or(theme.colors.border));
+        let c = self.color.unwrap_or_else(|| {
+            if theme.uses_default_palette() {
+                Color::border()
+            } else {
+                theme.colors.border
+            }
+        });
         cx.alloc_node(NodeKind::Container(ContainerKind::Divider {
             thickness: self.thickness,
             color: c,

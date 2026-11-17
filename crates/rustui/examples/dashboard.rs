@@ -50,6 +50,15 @@ impl View for DashboardApp {
                                                         (
                                                             Text::new("Amplitude:"),
                                                             Slider::new(gain.binding(), 0.1, 1.0),
+                                                            Text::new(move || {
+                                                                format!(
+                                                                    "{:.0}%",
+                                                                    gain.get() * 100.0
+                                                                )
+                                                            })
+                                                            .font(Font::caption())
+                                                            .color(Color::secondary()),
+                                                            Spacer::new(),
                                                             Button::new("Details ›", move || {
                                                                 nav.set(1);
                                                             }),

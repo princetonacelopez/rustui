@@ -8,11 +8,11 @@ impl View for Counter {
     fn body(self, cx: &mut Cx) -> impl View {
         let count = cx.state(0);
         VStack::new(
-            12,
+            16,
             (
-                Text::new(move || format!("Count: {}", count.get())).font(Font::title()),
+                Text::new(move || format!("Count: {}", count.get())).font(Font::large_title()),
                 HStack::new(
-                    8,
+                    10,
                     (
                         Button::new("-", move || count.update(|c| *c -= 1)),
                         Button::new("+", move || count.update(|c| *c += 1)),
@@ -20,7 +20,17 @@ impl View for Counter {
                 ),
             ),
         )
-        .padding(16)
+        .padding(24)
+        .background(Color::surface_elevated())
+        .border(1, Color::border())
+        .corner_radius(12)
+        .shadow(Color::rgba(0.0, 0.0, 0.0, 0.08), 10, Point::new(0.0, 3.0))
+        .frame(
+            Frame::new()
+                .max_width(f32::INFINITY)
+                .max_height(f32::INFINITY),
+        )
+        .background(Color::background())
     }
 }
 

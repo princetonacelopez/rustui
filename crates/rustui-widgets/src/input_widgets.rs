@@ -4,9 +4,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rustui_core::{
-    AccessibilityRole, Binding, BuildCx, Color, ContainerKind, ControlNodeData, CornerRadii, Cx,
-    DirtyFlags, Edges, EmptyView, Frame, KeyCode, NodeId, NodeKind, PointerPhase, Primitive, Rect,
-    TextNodeData, VerticalAlignment, View,
+    AccessibilityRole, Alignment, Binding, BuildCx, Color, ContainerKind, ControlNodeData,
+    CornerRadii, Cx, DirtyFlags, Edges, EmptyView, Frame, KeyCode, NodeId, NodeKind, PointerPhase,
+    Primitive, Rect, TextNodeData, VerticalAlignment, View,
 };
 use rustui_platform::{DesktopPlatform, Platform};
 use rustui_text::{EditableText, ImeState, TextBuffer};
@@ -46,6 +46,28 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
         ..Default::default()
     }));
 
+    let standard = theme.uses_default_palette();
+    let primary_col = if standard {
+        Color::primary()
+    } else {
+        theme.colors.primary
+    };
+    let secondary_col = if standard {
+        Color::secondary()
+    } else {
+        theme.colors.secondary
+    };
+    let bg_col = if standard {
+        Color::surface_elevated()
+    } else {
+        theme.colors.surface_elevated
+    };
+    let border_col = if standard {
+        Color::border()
+    } else {
+        theme.colors.border
+    };
+
     let text_child = cx.alloc_node(NodeKind::Text(TextNodeData {
         text: format_display(&initial, &cfg.placeholder, cfg.masked),
         font: if cfg.multiline {
@@ -54,20 +76,17 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
             Font::body()
         },
         color: Some(if initial.is_empty() {
-            theme.colors.secondary
+            secondary_col
         } else {
-            theme.colors.primary
+            primary_col
         }),
+        caret: Some(if initial.is_empty() { 0 } else { initial.len() }),
         ..Default::default()
     }));
 
     let placeholder_c = cfg.placeholder.clone();
     let masked = cfg.masked;
     let multiline = cfg.multiline;
-    let primary_col = theme.colors.primary;
-    let secondary_col = theme.colors.secondary;
-    let accent_col = theme.colors.accent;
-    let border_col = theme.colors.border;
 
     let sync_node = {
         let rt = cx.runtime.clone();
@@ -106,8 +125,13 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
                 if let Some(tn) = inner.nodes.get_mut(text_child)
                     && let NodeKind::Text(t) = &mut tn.kind
                 {
-                    t.text = format_display(&current, &placeholder, masked);
-                    t.color = Some(if current.is_empty() && preedit.is_none() {
+                    let has_preedit = preedit.is_some();
+                    t.text = if current.is_empty() && has_preedit {
+                        String::new()
+                    } else {
+                        format_display(&current, &placeholder, masked)
+                    };
+                    t.color = Some(if current.is_empty() && !has_preedit {
                         secondary_col
                     } else {
                         primary_col
@@ -141,25 +165,68 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
     let a11y_buf = buffer.clone();
     let a11y_sync = sync_node.clone();
 
+    let click_buf = buffer.clone();
+    let click_rt = cx.runtime.clone();
+
     cx.runtime.with_inner_mut(|inner| {
         if let Some(n) = inner.nodes.get_mut(node) {
             n.layout_props.padding = Edges::symmetric(8.0, 10.0);
             n.layout_props.frame = Some(if multiline {
-                Frame::new().min_width(220.0).min_height(120.0)
+                Frame::new()
+                    .min_width(220.0)
+                    .min_height(120.0)
+                    .max_width(f32::INFINITY)
+                    .max_height(f32::INFINITY)
+                    .alignment(Alignment::TOP_LEADING)
             } else {
-                Frame::new().min_width(180.0).height(36.0)
+                Frame::new()
+                    .min_width(140.0)
+                    .ideal_width(220.0)
+                    .max_width(f32::INFINITY)
+                    .height(36.0)
+                    .alignment(Alignment::LEADING)
             });
-            n.visual_props.background = Some(theme.colors.surface_elevated);
+            n.visual_props.background = Some(bg_col);
             n.visual_props.border = Some((1.0, border_col));
             n.visual_props.corner_radii = CornerRadii::all(theme.radius_sm);
             n.visual_props.clip_to_bounds = true;
             n.focus.focusable = true;
             n.focus.accepts_text_input = true;
             n.accessibility.role = cfg.role;
-            n.accessibility.label = Some(cfg.placeholder.clone());
+            let a11y_label = if cfg.placeholder.is_empty() {
+                if cfg.multiline {
+                    "Text Editor".to_owned()
+                } else {
+                    "Text Field".to_owned()
+                }
+            } else {
+                cfg.placeholder.clone()
+            };
+            n.accessibility.label = Some(a11y_label);
             n.accessibility.value = Some(initial);
             n.accessibility.supports_focus = true;
             n.accessibility.supports_set_value = true;
+
+            n.events.on_pointer = Some(Rc::new(move |ev| {
+                if ev.phase == PointerPhase::Down {
+                    let active = {
+                        let b = click_buf.borrow();
+                        if b.text().is_empty() {
+                            0
+                        } else {
+                            b.selection().active
+                        }
+                    };
+                    click_rt.with_inner_mut(|inner| {
+                        if let Some(tn) = inner.nodes.get_mut(text_child)
+                            && let NodeKind::Text(t) = &mut tn.kind
+                        {
+                            t.caret = Some(active);
+                            inner.mark_dirty(text_child, DirtyFlags::PAINT);
+                        }
+                    });
+                }
+            }));
 
             n.events.on_key = Some(Rc::new(move |ev| {
                 if !ev.is_down {
@@ -275,7 +342,7 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
         }
     });
 
-    // React to external binding changes and focus border color.
+    // React to external binding changes.
     let watch_text = cfg.text;
     let watch_buf = buffer;
     cx.runtime.register_node_updater(
@@ -286,30 +353,24 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
             if buf.text() != val {
                 buf.set_text(&val);
             }
+            let sel_active = buf.selection().active;
             if let NodeKind::Text(t) = &mut n.kind {
-                t.text = format_display(&val, &placeholder_c, masked);
-                t.color = Some(if val.is_empty() {
+                let has_preedit = t.preedit.is_some();
+                t.text = if val.is_empty() && has_preedit {
+                    String::new()
+                } else {
+                    format_display(&val, &placeholder_c, masked)
+                };
+                t.color = Some(if val.is_empty() && !has_preedit {
                     secondary_col
                 } else {
                     primary_col
                 });
+                t.caret = Some(if val.is_empty() { 0 } else { sel_active });
             }
             DirtyFlags::LAYOUT | DirtyFlags::PAINT
         },
     );
-
-    // Highlight border when focused.
-    cx.runtime.with_inner_mut(|inner| {
-        if let Some(n) = inner.nodes.get_mut(node) {
-            let old_pointer = n.events.on_pointer.clone();
-            n.events.on_pointer = Some(Rc::new(move |ev| {
-                if let Some(p) = &old_pointer {
-                    p(ev);
-                }
-            }));
-        }
-    });
-    let _ = accent_col;
 
     cx.runtime.attach_child(node, text_child);
     node
@@ -529,10 +590,27 @@ impl Primitive for Slider {
         };
 
         let update_drag = update_from_x.clone();
+        let standard = theme.uses_default_palette();
+        let track_bg = if standard {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
+        let fill_bg = if standard {
+            Color::accent()
+        } else {
+            theme.colors.accent
+        };
         cx.runtime.with_inner_mut(|inner| {
             if let Some(n) = inner.nodes.get_mut(track) {
-                n.layout_props.frame = Some(Frame::new().min_width(160.0).height(24.0));
-                n.visual_props.background = Some(theme.colors.border);
+                n.layout_props.frame = Some(
+                    Frame::new()
+                        .min_width(160.0)
+                        .ideal_width(200.0)
+                        .height(12.0)
+                        .alignment(Alignment::LEADING),
+                );
+                n.visual_props.background = Some(track_bg);
                 n.visual_props.corner_radii = CornerRadii::all(6.0);
                 n.focus.focusable = true;
                 n.accessibility.role = AccessibilityRole::Slider;
@@ -580,7 +658,7 @@ impl Primitive for Slider {
                 }));
             }
             if let Some(f) = inner.nodes.get_mut(fill) {
-                f.visual_props.background = Some(theme.colors.accent);
+                f.visual_props.background = Some(fill_bg);
                 f.visual_props.corner_radii = CornerRadii::all(6.0);
             }
         });
@@ -603,7 +681,8 @@ impl Primitive for Slider {
             move || self.value.get(),
             move |f, val| {
                 let frac = ((val - min) / (max - min)).clamp(0.0, 1.0);
-                f.layout_props.frame = Some(Frame::fixed(160.0 * frac, 12.0));
+                let fill_w = (160.0 * frac).max(if frac > 0.0 { 6.0 } else { 0.0 });
+                f.layout_props.frame = Some(Frame::fixed(fill_w, 12.0));
                 DirtyFlags::LAYOUT | DirtyFlags::PAINT
             },
         );
@@ -651,11 +730,29 @@ impl Primitive for Picker {
         let inc_b = self.selected.clone();
         let dec_b = self.selected.clone();
 
+        let standard = theme.uses_default_palette();
+        let bg_col = if standard {
+            Color::surface()
+        } else {
+            theme.colors.surface
+        };
+        let border_col = if standard {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
+
         cx.runtime.with_inner_mut(|inner| {
             if let Some(n) = inner.nodes.get_mut(node) {
                 n.layout_props.padding = Edges::symmetric(6.0, 12.0);
-                n.visual_props.background = Some(theme.colors.surface);
-                n.visual_props.border = Some((1.0, theme.colors.border));
+                n.layout_props.frame = Some(
+                    Frame::new()
+                        .min_width(92.0)
+                        .min_height(34.0)
+                        .alignment(Alignment::CENTER),
+                );
+                n.visual_props.background = Some(bg_col);
+                n.visual_props.border = Some((1.0, border_col));
                 n.visual_props.corner_radii = CornerRadii::all(theme.radius_sm);
                 n.focus.focusable = true;
                 n.accessibility.role = AccessibilityRole::ComboBox;
@@ -760,6 +857,7 @@ impl Primitive for Checkbox {
 
         let toggle_b = self.checked.clone();
         let toggle_fn = Rc::new(move || toggle_b.update(|v| *v = !*v));
+        let lbl_toggle = toggle_fn.clone();
         let key_fn = toggle_fn.clone();
         let set_b = self.checked.clone();
 
@@ -788,9 +886,22 @@ impl Primitive for Checkbox {
         });
 
         let watch_b = self.checked.clone();
-        let accent = theme.colors.accent;
-        let surface = theme.colors.surface_elevated;
-        let border = theme.colors.border;
+        let standard = theme.uses_default_palette();
+        let accent = if standard {
+            Color::accent()
+        } else {
+            theme.colors.accent
+        };
+        let surface = if standard {
+            Color::surface_elevated()
+        } else {
+            theme.colors.surface_elevated
+        };
+        let border = if standard {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
         cx.runtime.register_node_updater(
             box_node,
             move || watch_b.get(),
@@ -822,6 +933,11 @@ impl Primitive for Checkbox {
         cx.runtime.attach_child(box_node, check_mark);
 
         let label = Text::new(self.label).build_node(cx);
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(l) = inner.nodes.get_mut(label) {
+                l.events.on_tap = Some(lbl_toggle);
+            }
+        });
         cx.runtime.attach_child(row, box_node);
         cx.runtime.attach_child(row, label);
         row
