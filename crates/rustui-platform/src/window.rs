@@ -6,8 +6,9 @@ use std::time::Instant;
 
 use accesskit_winit::{Adapter as AkAdapter, Event as AkEvent, WindowEvent as AkWindowEvent};
 use rustui_core::{
-    BuildCx, Color, KeyCode, KeyEvent, Modifiers, NodeId, Point, PointerButton, PointerEvent,
-    PointerPhase, Rect, Runtime, ScrollEvent, Size, View,
+    BuildCx, Color, DirtyFlags, KeyCode, KeyEvent, Modifiers, NodeId, NodeKind, Point,
+    PointerButton, PointerEvent, PointerPhase, Rect, Runtime, ScrollEvent, Size, ThemePalette,
+    View,
 };
 use rustui_layout::LayoutEngine;
 use rustui_render::{
@@ -16,13 +17,13 @@ use rustui_render::{
 use rustui_text::{ParleyTextMeasurer, ParleyTextPainter, TextSystem};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
+use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 use crate::accessibility::AccessKitBridge;
-use crate::input::{FocusManager, GestureRecognizer};
+use crate::input::{FocusManager, GestureRecognizer, HitTester};
 
 /// System theme variant reported by the OS window manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,6 +47,7 @@ pub struct WindowOptions {
     pub custom_title_bar: bool,
     pub inspector: bool,
     pub clear_color: Color,
+    pub follow_os_theme: bool,
 }
 
 impl Default for WindowOptions {
@@ -62,6 +64,7 @@ impl Default for WindowOptions {
             custom_title_bar: false,
             inspector: false,
             clear_color: Color::from_hex(0xf8fafc),
+            follow_os_theme: true,
         }
     }
 }
@@ -118,6 +121,8 @@ struct ManagedWindow {
     cursor_pos: Point,
     modifiers: Modifiers,
     occluded: bool,
+    ime_allowed: bool,
+    active_cursor: &'static str,
 }
 
 /// Multi-window manager coordinating shared [`Runtime`], [`TextSystem`], and [`WgpuRenderer`].
@@ -260,6 +265,36 @@ impl WindowManager {
         window.request_redraw();
 
         let id = window.id();
+        let mut opts = opts;
+        let mut focus = FocusManager::new();
+        let initial_editor = self.runtime.with_inner(|inner| {
+            let mut stack = vec![root];
+            while let Some(nid) = stack.pop() {
+                if let Some(n) = inner.nodes.get(nid) {
+                    if matches!(&n.kind, NodeKind::Control(c) if c.kind == "texteditor") {
+                        return Some(nid);
+                    }
+                    for &cid in n.children.iter().rev() {
+                        stack.push(cid);
+                    }
+                }
+            }
+            None
+        });
+        if let Some(ed) = initial_editor {
+            focus.set_focus(&self.runtime, Some(ed));
+        }
+
+        if opts.follow_os_theme
+            && let Some(wt) = window.theme()
+        {
+            let sys = match wt {
+                winit::window::Theme::Dark => SystemTheme::Dark,
+                winit::window::Theme::Light => SystemTheme::Light,
+            };
+            apply_os_theme_to_subtree(&self.runtime, root, &mut opts.clear_color, sys);
+        }
+
         let inspector = InspectorOverlay::new(opts.inspector);
         self.windows.insert(
             id,
@@ -271,7 +306,7 @@ impl WindowManager {
                 root,
                 logical_size,
                 scale_factor,
-                focus: FocusManager::new(),
+                focus,
                 gestures: GestureRecognizer::new(),
                 damage: DamageTracker::new(),
                 inspector,
@@ -279,6 +314,8 @@ impl WindowManager {
                 cursor_pos: Point::ZERO,
                 modifiers: Modifiers::NONE,
                 occluded: false,
+                ime_allowed: false,
+                active_cursor: "default",
             },
         );
     }
@@ -286,30 +323,7 @@ impl WindowManager {
     fn redraw_window(&mut self, window_id: WindowId) {
         self.runtime.poll_tasks();
         self.runtime.flush_reactive();
-
-        let anim_updates = self
-            .runtime
-            .with_inner_mut(|inner| inner.scheduler.tick_animations(Instant::now()));
-        if !anim_updates.is_empty() {
-            self.runtime.with_inner_mut(|inner| {
-                for (nid, prop, val) in anim_updates {
-                    if let Some(n) = inner.nodes.get_mut(nid) {
-                        match (prop, val) {
-                            (
-                                rustui_core::AnimProperty::Opacity,
-                                rustui_core::AnimValue::Scalar(op),
-                            ) => n.visual_props.opacity = op,
-                            (
-                                rustui_core::AnimProperty::Color,
-                                rustui_core::AnimValue::Color(c),
-                            ) => n.visual_props.background = Some(c),
-                            _ => {}
-                        }
-                        n.dirty.insert(rustui_core::DirtyFlags::PAINT);
-                    }
-                }
-            });
-        }
+        let _ = self.runtime.tick_animations(Instant::now());
 
         let Some(win) = self.windows.get_mut(&window_id) else {
             return;
@@ -338,7 +352,10 @@ impl WindowManager {
                 })
             });
             if let Some(rect) = ime_info {
-                win.window.set_ime_allowed(true);
+                if !win.ime_allowed {
+                    win.window.set_ime_allowed(true);
+                    win.ime_allowed = true;
+                }
                 win.window.set_ime_cursor_area(
                     LogicalPosition::new(f64::from(rect.x), f64::from(rect.y)),
                     LogicalSize::new(
@@ -346,11 +363,13 @@ impl WindowManager {
                         f64::from(rect.height.max(18.0)),
                     ),
                 );
-            } else {
+            } else if win.ime_allowed {
                 win.window.set_ime_allowed(false);
+                win.ime_allowed = false;
             }
-        } else {
+        } else if win.ime_allowed {
             win.window.set_ime_allowed(false);
+            win.ime_allowed = false;
         }
 
         let viewport_rect = Rect::new(0.0, 0.0, win.logical_size.width, win.logical_size.height);
@@ -518,11 +537,21 @@ impl ApplicationHandler<AppEvent> for WindowManager {
                 }
             }
             WindowEvent::ThemeChanged(theme) => {
+                let t = match theme {
+                    winit::window::Theme::Dark => SystemTheme::Dark,
+                    winit::window::Theme::Light => SystemTheme::Light,
+                };
+                if let Some(win) = self.windows.get_mut(&window_id)
+                    && win.options.follow_os_theme
+                {
+                    apply_os_theme_to_subtree(
+                        &self.runtime,
+                        win.root,
+                        &mut win.options.clear_color,
+                        t,
+                    );
+                }
                 if let Some(cb) = &self.on_theme_change {
-                    let t = match theme {
-                        winit::window::Theme::Dark => SystemTheme::Dark,
-                        winit::window::Theme::Light => SystemTheme::Light,
-                    };
                     cb(t);
                 }
                 for win in self.windows.values() {
@@ -559,9 +588,44 @@ impl ApplicationHandler<AppEvent> for WindowManager {
                             modifiers: win.modifiers,
                         },
                     );
+                    let cursor_kind = HitTester::cursor_kind_at(&self.runtime, win.root, logical);
+                    if cursor_kind != win.active_cursor {
+                        win.active_cursor = cursor_kind;
+                        let icon = match cursor_kind {
+                            "text" => CursorIcon::Text,
+                            "ew-resize" => CursorIcon::EwResize,
+                            "pointer" => CursorIcon::Pointer,
+                            _ => CursorIcon::Default,
+                        };
+                        win.window.set_cursor(icon);
+                    }
                     if self.runtime.needs_redraw() {
                         win.window.request_redraw();
                     }
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                if let Some(win) = self.windows.get_mut(&window_id) {
+                    let pos = Point::new(
+                        touch.location.x as f32 / win.scale_factor,
+                        touch.location.y as f32 / win.scale_factor,
+                    );
+                    let phase = match touch.phase {
+                        TouchPhase::Started => PointerPhase::Down,
+                        TouchPhase::Moved => PointerPhase::Move,
+                        TouchPhase::Ended => PointerPhase::Up,
+                        TouchPhase::Cancelled => PointerPhase::Cancel,
+                    };
+                    win.gestures.handle_touch(
+                        &self.runtime,
+                        win.root,
+                        &mut win.focus,
+                        touch.id,
+                        phase,
+                        pos,
+                        win.modifiers,
+                    );
+                    win.window.request_redraw();
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -655,6 +719,39 @@ impl ApplicationHandler<AppEvent> for WindowManager {
     }
 }
 
+fn apply_os_theme_to_subtree(
+    runtime: &Runtime,
+    root: NodeId,
+    clear_color: &mut Color,
+    sys: SystemTheme,
+) {
+    let next_palette = match sys {
+        SystemTheme::Dark => ThemePalette::dark(),
+        SystemTheme::Light => ThemePalette::light(),
+    };
+    *clear_color = next_palette.background;
+    runtime.with_inner_mut(|inner| {
+        let old_palette = inner
+            .nodes
+            .get(root)
+            .and_then(|n| n.env.get::<ThemePalette>());
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if let Some(n) = inner.nodes.get_mut(id) {
+                let matches_root = id == root
+                    || n.env.get::<ThemePalette>().is_none()
+                    || n.env.get::<ThemePalette>() == old_palette;
+                if matches_root {
+                    n.env.insert(next_palette);
+                    n.dirty.insert(DirtyFlags::PAINT);
+                    stack.extend(n.children.iter().copied());
+                }
+            }
+        }
+        inner.scheduler.request_redraw();
+    });
+}
+
 fn map_winit_key(key: &Key) -> KeyCode {
     match key {
         Key::Named(NamedKey::Enter) => KeyCode::Enter,
@@ -671,7 +768,17 @@ fn map_winit_key(key: &Key) -> KeyCode {
         Key::Named(NamedKey::End) => KeyCode::End,
         Key::Named(NamedKey::PageUp) => KeyCode::PageUp,
         Key::Named(NamedKey::PageDown) => KeyCode::PageDown,
-        Key::Character(s) => KeyCode::Character(s.to_string()),
+        Key::Named(NamedKey::Insert) => KeyCode::Named("Insert".to_owned()),
+        Key::Character(s) => {
+            let raw = s.as_str();
+            if raw.len() == 1 {
+                let b = raw.as_bytes()[0];
+                if (1..=26).contains(&b) {
+                    return KeyCode::Character(((b'a' + (b - 1)) as char).to_string());
+                }
+            }
+            KeyCode::Character(raw.to_owned())
+        }
         other => KeyCode::Named(format!("{other:?}")),
     }
 }

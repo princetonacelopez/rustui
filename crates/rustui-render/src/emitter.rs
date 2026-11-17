@@ -121,28 +121,47 @@ fn emit_node_recursive(
             .is_some_and(|p| p.focus.focused);
 
         let node = inner.nodes.get_mut(node_id)?;
-        let bounds = node.bounds();
+        let mut bounds = node.bounds();
         let mut visual = node.visual_props.clone();
-        if let NodeKind::Control(ctrl) = &node.kind
-            && !ctrl.is_disabled
-            && let Some(bg) = visual.background
-        {
-            let resolved = active_palette.resolve(bg);
-            visual.background = Some(if ctrl.is_pressed {
-                if resolved.a > 0.01 {
-                    resolved.lerp(rustui_core::Color::BLACK, 0.15)
+        if let NodeKind::Control(ctrl) = &node.kind {
+            let is_editable_focused = node.focus.focused
+                && matches!(ctrl.kind, "textfield" | "texteditor" | "securefield");
+            if !ctrl.is_disabled
+                && let Some(bg) = visual.background
+            {
+                let resolved = active_palette.resolve(bg);
+                visual.background = Some(if ctrl.is_pressed {
+                    if resolved.a > 0.01 {
+                        resolved.lerp(rustui_core::Color::BLACK, 0.16)
+                    } else {
+                        active_palette.border.with_alpha(0.55)
+                    }
+                } else if ctrl.is_hovered {
+                    if resolved.a > 0.01 {
+                        resolved.lerp(rustui_core::Color::WHITE, 0.12)
+                    } else {
+                        active_palette.surface.with_alpha(0.85)
+                    }
                 } else {
-                    active_palette.border.with_alpha(0.5)
+                    resolved
+                });
+            }
+            if !ctrl.is_disabled {
+                if ctrl.is_pressed {
+                    bounds.y += 0.5;
+                    visual.border = Some((
+                        visual.border.map_or(1.5, |(w, _)| w.max(1.5)),
+                        active_palette.accent,
+                    ));
+                } else if is_editable_focused {
+                    visual.border = Some((1.75, active_palette.accent));
+                } else if ctrl.is_hovered
+                    && let Some((bw, bc)) = visual.border
+                {
+                    let resolved_bc = active_palette.resolve(bc);
+                    visual.border = Some((bw, resolved_bc.lerp(active_palette.accent, 0.55)));
                 }
-            } else if ctrl.is_hovered {
-                if resolved.a > 0.01 {
-                    resolved.lerp(rustui_core::Color::WHITE, 0.10)
-                } else {
-                    active_palette.surface.with_alpha(0.75)
-                }
-            } else {
-                resolved
-            });
+            }
         }
         let show_focus_ring =
             node.focus.focusable && node.focus.focused && bounds.width > 0.0 && bounds.height > 0.0;
@@ -293,7 +312,45 @@ fn emit_node_recursive(
             list.stroke_rounded_rect(bounds, visual.corner_radii, bw, palette.resolve(bc));
         }
         if show_focus_ring {
-            list.stroke_rounded_rect(bounds, visual.corner_radii, 1.5, palette.accent);
+            let r_outer = rustui_core::CornerRadii {
+                top_left: visual.corner_radii.top_left + 3.0,
+                top_right: visual.corner_radii.top_right + 3.0,
+                bottom_right: visual.corner_radii.bottom_right + 3.0,
+                bottom_left: visual.corner_radii.bottom_left + 3.0,
+            };
+            let r_inner = rustui_core::CornerRadii {
+                top_left: visual.corner_radii.top_left + 1.0,
+                top_right: visual.corner_radii.top_right + 1.0,
+                bottom_right: visual.corner_radii.bottom_right + 1.0,
+                bottom_left: visual.corner_radii.bottom_left + 1.0,
+            };
+            let halo_rect = Rect::new(
+                bounds.x - 3.0,
+                bounds.y - 3.0,
+                bounds.width + 6.0,
+                bounds.height + 6.0,
+            );
+            let ring_rect = Rect::new(
+                bounds.x - 1.0,
+                bounds.y - 1.0,
+                bounds.width + 2.0,
+                bounds.height + 2.0,
+            );
+            list.stroke_rounded_rect(halo_rect, r_outer, 2.5, palette.accent.with_alpha(0.38));
+            let bg_is_accent = visual.background.is_some_and(|bg| {
+                let rb = palette.resolve(bg);
+                (rb.r - palette.accent.r).abs()
+                    + (rb.g - palette.accent.g).abs()
+                    + (rb.b - palette.accent.b).abs()
+                    < 0.35
+                    && rb.a > 0.5
+            });
+            let ring_color = if bg_is_accent {
+                rustui_core::Color::WHITE
+            } else {
+                palette.accent
+            };
+            list.stroke_rounded_rect(ring_rect, r_inner, 2.0, ring_color);
         }
     }
     if needs_layer {

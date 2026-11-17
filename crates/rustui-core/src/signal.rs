@@ -745,6 +745,68 @@ impl Runtime {
         )
     }
 
+    /// Returns whether reduced-motion mode is enabled on the scheduler.
+    pub fn is_reduced_motion(&self) -> bool {
+        self.inner.borrow().scheduler.reduced_motion
+    }
+
+    /// Enables or disables reduced-motion mode, completing any active animations immediately when enabled.
+    pub fn set_reduced_motion(&self, reduced: bool) {
+        let mut inner = self.inner.borrow_mut();
+        inner.scheduler.reduced_motion = reduced;
+        if reduced && !inner.scheduler.animations.is_empty() {
+            let active: Vec<_> = inner.scheduler.animations.drain().collect();
+            for ((nid, prop), anim) in active {
+                if let Some(n) = inner.nodes.get_mut(nid) {
+                    apply_anim_value(n, prop, anim.to);
+                    inner.mark_dirty(nid, dirty_for_anim_prop(prop));
+                }
+            }
+        }
+    }
+
+    /// Advances active node animations to `now` and marks updated nodes dirty.
+    pub fn tick_animations(&self, now: Instant) -> bool {
+        let updates = self.inner.borrow_mut().scheduler.tick_animations(now);
+        if updates.is_empty() {
+            return false;
+        }
+        let mut inner = self.inner.borrow_mut();
+        for (nid, prop, val) in updates {
+            if let Some(n) = inner.nodes.get_mut(nid) {
+                apply_anim_value(n, prop, val);
+                inner.mark_dirty(nid, dirty_for_anim_prop(prop));
+            }
+        }
+        true
+    }
+
+    /// Starts a property animation on `node` unless reduced motion is enabled (in which case it applies `to` immediately).
+    pub fn start_node_animation(
+        &self,
+        node: NodeId,
+        property: AnimProperty,
+        from: AnimValue,
+        to: AnimValue,
+        animation: crate::types::Animation,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.scheduler.reduced_motion {
+            if let Some(n) = inner.nodes.get_mut(node) {
+                apply_anim_value(n, property, to);
+                inner.mark_dirty(node, dirty_for_anim_prop(property));
+            }
+            return;
+        }
+        if let Some(n) = inner.nodes.get_mut(node) {
+            apply_anim_value(n, property, from);
+            inner.mark_dirty(node, dirty_for_anim_prop(property));
+        }
+        inner
+            .scheduler
+            .start_animation(node, property, from, to, animation, Instant::now());
+    }
+
     fn register_updater_internal<T: 'static>(
         &self,
         node: NodeId,
@@ -775,11 +837,15 @@ impl Runtime {
             let _ = uid;
             id
         };
-        self.run_node_updater(id);
+        self.run_node_updater_inner(id, true);
         id
     }
 
     fn run_node_updater(&self, reactive_id: ReactiveId) {
+        self.run_node_updater_inner(reactive_id, false);
+    }
+
+    fn run_node_updater_inner(&self, reactive_id: ReactiveId, is_initial: bool) {
         let (node_id, compute, apply, post_inner) = {
             let mut inner = self.inner.borrow_mut();
             let Some(entry) = inner.reactives.get_mut(reactive_id) else {
@@ -816,6 +882,7 @@ impl Runtime {
         if let Some(entry) = inner.reactives.get_mut(reactive_id) {
             entry.deps = new_deps;
         }
+        let reduced_motion = inner.scheduler.reduced_motion;
         let mut dirty = DirtyFlags::NONE;
         let mut anims_to_start: Vec<(AnimProperty, AnimValue, AnimValue, crate::types::Animation)> =
             Vec::new();
@@ -825,9 +892,15 @@ impl Runtime {
                     node.subscriptions.push(sub);
                 }
             }
-            let anim = current_animation().or_else(|| node.animation.map(|a| a.animation));
+            let anim = if is_initial || reduced_motion {
+                None
+            } else {
+                current_animation().or_else(|| node.animation.map(|a| a.animation))
+            };
             let prev_opacity = node.visual_props.opacity;
             let prev_bg = node.visual_props.background;
+            let prev_offset = node.layout_props.offset;
+            let prev_radius = node.visual_props.corner_radii.top_left;
             dirty = apply(node, val);
             if let Some(animation) = anim {
                 if (node.visual_props.opacity - prev_opacity).abs() > f32::EPSILON {
@@ -848,6 +921,36 @@ impl Runtime {
                         AnimProperty::Color,
                         AnimValue::Color(from_c),
                         AnimValue::Color(to_c),
+                        animation,
+                    ));
+                }
+                if (node.layout_props.offset.x - prev_offset.x).abs() > f32::EPSILON {
+                    let target_x = node.layout_props.offset.x;
+                    node.layout_props.offset.x = prev_offset.x;
+                    anims_to_start.push((
+                        AnimProperty::OffsetX,
+                        AnimValue::Scalar(prev_offset.x),
+                        AnimValue::Scalar(target_x),
+                        animation,
+                    ));
+                }
+                if (node.layout_props.offset.y - prev_offset.y).abs() > f32::EPSILON {
+                    let target_y = node.layout_props.offset.y;
+                    node.layout_props.offset.y = prev_offset.y;
+                    anims_to_start.push((
+                        AnimProperty::OffsetY,
+                        AnimValue::Scalar(prev_offset.y),
+                        AnimValue::Scalar(target_y),
+                        animation,
+                    ));
+                }
+                if (node.visual_props.corner_radii.top_left - prev_radius).abs() > f32::EPSILON {
+                    let target_r = node.visual_props.corner_radii.top_left;
+                    node.visual_props.corner_radii = crate::types::CornerRadii::all(prev_radius);
+                    anims_to_start.push((
+                        AnimProperty::CornerRadius,
+                        AnimValue::Scalar(prev_radius),
+                        AnimValue::Scalar(target_r),
                         animation,
                     ));
                 }
@@ -1686,4 +1789,40 @@ macro_rules! impl_observable {
             }
         }
     };
+}
+
+fn dirty_for_anim_prop(prop: AnimProperty) -> DirtyFlags {
+    match prop {
+        AnimProperty::OffsetX | AnimProperty::OffsetY | AnimProperty::Bounds => {
+            DirtyFlags::LAYOUT | DirtyFlags::PAINT
+        }
+        AnimProperty::Opacity
+        | AnimProperty::Color
+        | AnimProperty::Scale
+        | AnimProperty::CornerRadius => DirtyFlags::PAINT,
+    }
+}
+
+fn apply_anim_value(node: &mut Node, prop: AnimProperty, val: AnimValue) {
+    match (prop, val) {
+        (AnimProperty::Opacity, AnimValue::Scalar(op)) => {
+            node.visual_props.opacity = op.clamp(0.0, 1.0);
+        }
+        (AnimProperty::Color, AnimValue::Color(col)) => {
+            node.visual_props.background = Some(col);
+        }
+        (AnimProperty::OffsetX, AnimValue::Scalar(x)) => {
+            node.layout_props.offset.x = x;
+        }
+        (AnimProperty::OffsetY, AnimValue::Scalar(y)) => {
+            node.layout_props.offset.y = y;
+        }
+        (AnimProperty::CornerRadius, AnimValue::Scalar(r)) => {
+            node.visual_props.corner_radii = crate::types::CornerRadii::all(r.max(0.0));
+        }
+        (AnimProperty::Bounds, AnimValue::Rect(r)) => {
+            node.layout_cache.bounds = r;
+        }
+        _ => {}
+    }
 }

@@ -10,7 +10,7 @@ pub use accessibility::{AccessKitBridge, WINDOW_AK_ROOT_ID, from_ak_id, to_ak_id
 pub use input::{FocusManager, GestureRecognizer, HitTester, key_down};
 pub use services::{
     DesktopPlatform, FileDialogOptions, MenuItemSpec, MenuSpec, NotificationSpec, Platform,
-    PlatformCapabilities, detect_platform_capabilities,
+    PlatformCapabilities, detect_platform_capabilities, detect_reduced_motion, detect_system_theme,
 };
 pub use simulator::{FrameSummary, HeadlessSimulator};
 pub use window::{

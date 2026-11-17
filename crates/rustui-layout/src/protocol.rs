@@ -197,6 +197,16 @@ impl ChildProxy<'_> {
         })
     }
 
+    /// Returns this child's explicit layout offset (`n.layout_props.offset`).
+    pub fn offset(&self) -> Point {
+        self.engine.runtime().with_inner(|inner| {
+            inner
+                .nodes
+                .get(self.node_id)
+                .map_or(Point::ZERO, |n| n.layout_props.offset)
+        })
+    }
+
     /// Resets this child's cached bounds to empty (used for offscreen pooled virtual list items).
     pub fn reset_bounds(&self) {
         self.engine.runtime().with_inner_mut(|inner| {

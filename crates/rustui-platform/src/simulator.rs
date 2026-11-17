@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use accesskit::{ActionRequest, TreeUpdate};
 use rustui_core::{
-    BuildCx, Color, KeyCode, Modifiers, NodeId, NodeKind, Point, PointerButton, PointerEvent,
-    PointerPhase, Rect, Runtime, ScrollEvent, Size, View,
+    BuildCx, Color, KeyCode, Modifiers, NodeId, NodeKind, PinchEvent, Point, PointerButton,
+    PointerEvent, PointerPhase, Rect, Runtime, ScrollEvent, Size, View,
 };
 use rustui_layout::LayoutEngine;
 use rustui_render::{
@@ -109,33 +109,7 @@ impl HeadlessSimulator {
         self.runtime.poll_tasks();
         let (reactive_updates, rebuilt_nodes) = self.runtime.flush_reactive();
 
-        let anim_updates = self
-            .runtime
-            .with_inner_mut(|inner| inner.scheduler.tick_animations(Instant::now()));
-        if !anim_updates.is_empty() {
-            self.runtime.with_inner_mut(|inner| {
-                for (nid, prop, val) in anim_updates {
-                    if let Some(n) = inner.nodes.get_mut(nid) {
-                        match (prop, val) {
-                            (
-                                rustui_core::AnimProperty::Opacity,
-                                rustui_core::AnimValue::Scalar(op),
-                            ) => {
-                                n.visual_props.opacity = op;
-                            }
-                            (
-                                rustui_core::AnimProperty::Color,
-                                rustui_core::AnimValue::Color(col),
-                            ) => {
-                                n.visual_props.background = Some(col);
-                            }
-                            _ => {}
-                        }
-                        n.dirty.insert(rustui_core::DirtyFlags::PAINT);
-                    }
-                }
-            });
-        }
+        let _ = self.runtime.tick_animations(Instant::now());
 
         if !self.runtime.needs_redraw() && reactive_updates == 0 && rebuilt_nodes == 0 {
             return FrameSummary {
@@ -256,6 +230,115 @@ impl HeadlessSimulator {
     pub fn click_node(&mut self, node_id: NodeId) -> FrameSummary {
         let b = self.node_bounds(node_id).expect("node has bounds");
         self.click(b.mid_x(), b.mid_y())
+    }
+
+    /// Simulates moving the pointer over `(x, y)` and flushes the frame.
+    pub fn hover(&mut self, x: f32, y: f32) -> FrameSummary {
+        self.gestures.handle_pointer(
+            &self.runtime,
+            self.root,
+            &mut self.focus,
+            PointerEvent {
+                position: Point::new(x, y),
+                button: PointerButton::Primary,
+                phase: PointerPhase::Move,
+                click_count: 0,
+                modifiers: Modifiers::NONE,
+            },
+        );
+        self.step_frame()
+    }
+
+    /// Simulates a secondary (right-button) click at `(x, y)` and flushes the frame.
+    pub fn right_click(&mut self, x: f32, y: f32) -> FrameSummary {
+        let pos = Point::new(x, y);
+        self.gestures.handle_pointer(
+            &self.runtime,
+            self.root,
+            &mut self.focus,
+            PointerEvent {
+                position: pos,
+                button: PointerButton::Secondary,
+                phase: PointerPhase::Down,
+                click_count: 1,
+                modifiers: Modifiers::NONE,
+            },
+        );
+        self.gestures.handle_pointer(
+            &self.runtime,
+            self.root,
+            &mut self.focus,
+            PointerEvent {
+                position: pos,
+                button: PointerButton::Secondary,
+                phase: PointerPhase::Up,
+                click_count: 1,
+                modifiers: Modifiers::NONE,
+            },
+        );
+        self.step_frame()
+    }
+
+    /// Simulates a touch-down contact `id` at `(x, y)`.
+    pub fn touch_down(&mut self, id: u64, x: f32, y: f32) -> FrameSummary {
+        self.gestures.handle_touch(
+            &self.runtime,
+            self.root,
+            &mut self.focus,
+            id,
+            PointerPhase::Down,
+            Point::new(x, y),
+            Modifiers::NONE,
+        );
+        self.step_frame()
+    }
+
+    /// Simulates a touch-move contact `id` to `(x, y)`.
+    pub fn touch_move(&mut self, id: u64, x: f32, y: f32) -> FrameSummary {
+        self.gestures.handle_touch(
+            &self.runtime,
+            self.root,
+            &mut self.focus,
+            id,
+            PointerPhase::Move,
+            Point::new(x, y),
+            Modifiers::NONE,
+        );
+        self.step_frame()
+    }
+
+    /// Simulates a touch-up contact `id` at `(x, y)`.
+    pub fn touch_up(&mut self, id: u64, x: f32, y: f32) -> FrameSummary {
+        self.gestures.handle_touch(
+            &self.runtime,
+            self.root,
+            &mut self.focus,
+            id,
+            PointerPhase::Up,
+            Point::new(x, y),
+            Modifiers::NONE,
+        );
+        self.step_frame()
+    }
+
+    /// Simulates a trackpad or touch pinch gesture centered at `position`.
+    pub fn pinch(&mut self, position: Point, scale_delta: f32) -> FrameSummary {
+        self.gestures.handle_pinch(
+            &self.runtime,
+            self.root,
+            PinchEvent {
+                position,
+                scale_delta,
+                phase: PointerPhase::Move,
+            },
+        );
+        self.step_frame()
+    }
+
+    /// Sets reduced-motion mode on the runtime scheduler and advances one frame.
+    pub fn set_reduced_motion(&mut self, reduced: bool) -> FrameSummary {
+        self.runtime.set_reduced_motion(reduced);
+        self.step_frame()
     }
 
     /// Simulates a drag gesture from `from` to `to`.

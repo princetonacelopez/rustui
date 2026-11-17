@@ -1,11 +1,12 @@
 //! Hit testing, Tab/Shift+Tab focus traversal, pointer capture, gestures, keyboard & IME routing.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rustui_core::{
-    DirtyFlags, DragEvent, KeyCode, KeyEvent, Modifiers, NodeId, NodeKind, PinchEvent, Point,
-    PointerButton, PointerEvent, PointerPhase, Rect, Runtime, RuntimeInner, ScrollAxes,
-    ScrollEvent,
+    AccessibilityRole, DirtyFlags, DragEvent, KeyCode, KeyEvent, Modifiers, NodeId, NodeKind,
+    PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Rect, Runtime, RuntimeInner,
+    ScrollAxes, ScrollEvent,
 };
 
 /// Clip-aware, front-to-back hit tester on the retained node tree.
@@ -38,6 +39,37 @@ impl HitTester {
             }
         });
         chain
+    }
+
+    /// Returns the preferred CSS/winit cursor semantic at `point` (`"text"`, `"ew-resize"`, `"pointer"`, or `"default"`).
+    pub fn cursor_kind_at(runtime: &Runtime, root: NodeId, point: Point) -> &'static str {
+        let Some(hit) = Self::hit_test(runtime, root, point) else {
+            return "default";
+        };
+        let chain = Self::ancestor_chain(runtime, hit);
+        runtime.with_inner(|inner| {
+            for id in chain {
+                let Some(n) = inner.nodes.get(id) else {
+                    continue;
+                };
+                if n.accessibility.role == AccessibilityRole::Splitter {
+                    return "ew-resize";
+                }
+                if let NodeKind::Control(c) = &n.kind {
+                    if c.is_disabled {
+                        return "default";
+                    }
+                    return match c.kind {
+                        "textfield" | "texteditor" | "securefield" => "text",
+                        _ => "pointer",
+                    };
+                }
+                if n.events.on_tap.is_some() || n.events.on_drag.is_some() {
+                    return "pointer";
+                }
+            }
+            "default"
+        })
     }
 }
 
@@ -228,6 +260,7 @@ pub struct GestureRecognizer {
     last_click_time: Option<Instant>,
     last_click_pos: Point,
     click_count: u32,
+    active_touches: HashMap<u64, Point>,
 }
 
 impl Default for GestureRecognizer {
@@ -248,6 +281,128 @@ impl GestureRecognizer {
             last_click_time: None,
             last_click_pos: Point::ZERO,
             click_count: 0,
+            active_touches: HashMap::new(),
+        }
+    }
+
+    /// Processes a single or multi-finger touch contact, routing taps, touch drags, scrolling, and 2-finger pinch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle_touch(
+        &mut self,
+        runtime: &Runtime,
+        root: NodeId,
+        focus: &mut FocusManager,
+        id: u64,
+        phase: PointerPhase,
+        position: Point,
+        modifiers: Modifiers,
+    ) {
+        match phase {
+            PointerPhase::Down => {
+                self.active_touches.insert(id, position);
+                if self.active_touches.len() == 1 {
+                    self.handle_pointer(
+                        runtime,
+                        root,
+                        focus,
+                        PointerEvent {
+                            position,
+                            button: PointerButton::Primary,
+                            phase: PointerPhase::Down,
+                            click_count: 1,
+                            modifiers,
+                        },
+                    );
+                }
+            }
+            PointerPhase::Move => {
+                let prev = self.active_touches.insert(id, position).unwrap_or(position);
+                if self.active_touches.len() == 2 {
+                    if let Some((_, &other)) = self.active_touches.iter().find(|&(&k, _)| k != id) {
+                        let old_dist = prev.distance_to(other);
+                        let new_dist = position.distance_to(other);
+                        if old_dist > 1.0 && (new_dist - old_dist).abs() > 0.1 {
+                            let scale = (new_dist / old_dist).clamp(0.5, 2.0);
+                            let mid = Point::new(
+                                (position.x + other.x) * 0.5,
+                                (position.y + other.y) * 0.5,
+                            );
+                            self.handle_pinch(
+                                runtime,
+                                root,
+                                PinchEvent {
+                                    position: mid,
+                                    scale_delta: scale - 1.0,
+                                    phase: PointerPhase::Move,
+                                },
+                            );
+                        }
+                    }
+                    return;
+                }
+                if self.active_touches.len() == 1 {
+                    let dx = position.x - prev.x;
+                    let dy = position.y - prev.y;
+                    let has_drag_control = self.captured_node.is_some_and(|cap| {
+                        HitTester::ancestor_chain(runtime, cap).into_iter().any(|nid| {
+                            runtime.with_inner(|inner| {
+                                inner.nodes.get(nid).is_some_and(|n| {
+                                    n.events.on_drag.is_some()
+                                        || matches!(
+                                            &n.kind,
+                                            NodeKind::Control(c)
+                                                if matches!(
+                                                    c.kind,
+                                                    "slider" | "textfield" | "texteditor" | "securefield"
+                                                )
+                                        )
+                                })
+                            })
+                        })
+                    });
+                    if !has_drag_control && (dx.abs() > 0.0 || dy.abs() > 0.0) {
+                        self.handle_scroll(
+                            runtime,
+                            root,
+                            ScrollEvent {
+                                position,
+                                delta_x: dx,
+                                delta_y: dy,
+                                is_momentum: false,
+                            },
+                        );
+                    }
+                    self.handle_pointer(
+                        runtime,
+                        root,
+                        focus,
+                        PointerEvent {
+                            position,
+                            button: PointerButton::Primary,
+                            phase: PointerPhase::Move,
+                            click_count: 0,
+                            modifiers,
+                        },
+                    );
+                }
+            }
+            PointerPhase::Up | PointerPhase::Cancel => {
+                self.active_touches.remove(&id);
+                if self.active_touches.is_empty() {
+                    self.handle_pointer(
+                        runtime,
+                        root,
+                        focus,
+                        PointerEvent {
+                            position,
+                            button: PointerButton::Primary,
+                            phase,
+                            click_count: 1,
+                            modifiers,
+                        },
+                    );
+                }
+            }
         }
     }
 
@@ -535,32 +690,49 @@ impl GestureRecognizer {
     }
 
     fn set_hover(&self, runtime: &Runtime, node_id: NodeId, hovered: bool) {
-        let (cb, mark) = runtime.with_inner_mut(|inner| {
-            let Some(n) = inner.nodes.get_mut(node_id) else {
-                return (None, false);
-            };
-            let mut changed = false;
-            if let NodeKind::Control(c) = &mut n.kind {
-                c.is_hovered = hovered;
-                changed = true;
+        let chain = HitTester::ancestor_chain(runtime, node_id);
+        let callbacks: Vec<_> = runtime.with_inner_mut(|inner| {
+            let mut out = Vec::new();
+            let mut dirty_nodes = Vec::new();
+            let mut found_control = false;
+            for &id in &chain {
+                if let Some(n) = inner.nodes.get_mut(id) {
+                    if !found_control
+                        && let NodeKind::Control(c) = &mut n.kind
+                        && !c.is_disabled
+                    {
+                        c.is_hovered = hovered;
+                        found_control = true;
+                        dirty_nodes.push(id);
+                    }
+                    if let Some(cb) = &n.events.on_hover {
+                        out.push(cb.clone());
+                    }
+                }
             }
-            (n.events.on_hover.clone(), changed)
+            for id in dirty_nodes {
+                inner.mark_dirty(id, DirtyFlags::PAINT);
+            }
+            out
         });
-        if mark {
-            runtime.with_inner_mut(|inner| inner.mark_dirty(node_id, DirtyFlags::PAINT));
-        }
-        if let Some(f) = cb {
+        for f in callbacks {
             runtime.enter(|| f(hovered));
         }
     }
 
     fn set_pressed(&self, runtime: &Runtime, node_id: NodeId, pressed: bool) {
+        let chain = HitTester::ancestor_chain(runtime, node_id);
         runtime.with_inner_mut(|inner| {
-            if let Some(n) = inner.nodes.get_mut(node_id)
-                && let NodeKind::Control(c) = &mut n.kind
-            {
-                c.is_pressed = pressed;
-                inner.mark_dirty(node_id, DirtyFlags::PAINT);
+            for id in chain {
+                if let Some(n) = inner.nodes.get_mut(id)
+                    && let NodeKind::Control(c) = &mut n.kind
+                {
+                    if !c.is_disabled {
+                        c.is_pressed = pressed;
+                        inner.mark_dirty(id, DirtyFlags::PAINT);
+                    }
+                    break;
+                }
             }
         });
     }

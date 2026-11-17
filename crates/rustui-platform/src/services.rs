@@ -2,7 +2,11 @@
 //! file dialogs, notifications, and Linux Wayland/X11 capability detection.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+
+use crate::window::SystemTheme;
+
+static SHARED_CLIPBOARD: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
 /// Menu bar item descriptor for native or in-window menus.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +88,12 @@ impl DesktopPlatform {
         }
     }
 
+    /// Returns a platform instance backed by the OS clipboard (when available)
+    /// and a process-wide shared clipboard buffer for reliable copy/paste across widgets.
+    pub fn shared() -> Self {
+        Self::new()
+    }
+
     /// Creates a purely in-memory headless platform instance (ideal for unit tests).
     pub fn headless() -> Self {
         Self {
@@ -111,21 +121,29 @@ impl Platform for DesktopPlatform {
         if let Ok(mut guard) = self.clipboard.lock()
             && let Some(cb) = guard.as_mut()
             && let Ok(text) = cb.get_text()
+            && !text.is_empty()
         {
             return Some(text);
         }
-        self.fallback_clipboard.lock().ok().map(|s| s.clone())
+        if let Ok(local) = self.fallback_clipboard.lock()
+            && !local.is_empty()
+        {
+            return Some(local.clone());
+        }
+        SHARED_CLIPBOARD.lock().ok().map(|s| s.clone())
     }
 
     fn clipboard_set(&self, text: &str) {
-        if let Ok(mut guard) = self.clipboard.lock()
-            && let Some(cb) = guard.as_mut()
-            && cb.set_text(text.to_owned()).is_ok()
-        {
-            return;
+        if let Ok(mut shared) = SHARED_CLIPBOARD.lock() {
+            *shared = text.to_owned();
         }
         if let Ok(mut fb) = self.fallback_clipboard.lock() {
             *fb = text.to_owned();
+        }
+        if let Ok(mut guard) = self.clipboard.lock()
+            && let Some(cb) = guard.as_mut()
+        {
+            let _ = cb.set_text(text.to_owned());
         }
     }
 
@@ -202,5 +220,123 @@ pub fn detect_platform_capabilities() -> PlatformCapabilities {
             accessibility_backend: "AT-SPI via AccessKit",
             clipboard_ready: arboard::Clipboard::new().is_ok(),
         }
+    }
+}
+
+/// Detects the current OS light/dark appearance preference.
+pub fn detect_system_theme() -> SystemTheme {
+    if let Ok(v) = std::env::var("RUSTUI_THEME") {
+        let lower = v.to_ascii_lowercase();
+        if lower.contains("dark") {
+            return SystemTheme::Dark;
+        }
+        if lower.contains("light") {
+            return SystemTheme::Light;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            && out.status.success()
+            && String::from_utf8_lossy(&out.stdout)
+                .to_ascii_lowercase()
+                .contains("dark")
+        {
+            return SystemTheme::Dark;
+        }
+        return SystemTheme::Light;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "/v",
+                "AppsUseLightTheme",
+            ])
+            .output()
+            && out.status.success()
+            && String::from_utf8_lossy(&out.stdout).contains("0x0")
+        {
+            return SystemTheme::Dark;
+        }
+        return SystemTheme::Light;
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        if let Ok(out) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+            && out.status.success()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+            if s.contains("prefer-dark") {
+                return SystemTheme::Dark;
+            }
+            if s.contains("prefer-light") {
+                return SystemTheme::Light;
+            }
+        }
+        if let Ok(gtk) = std::env::var("GTK_THEME")
+            && gtk.to_ascii_lowercase().contains("dark")
+        {
+            return SystemTheme::Dark;
+        }
+        SystemTheme::Light
+    }
+}
+
+/// Detects whether the OS/desktop environment prefers reduced motion.
+pub fn detect_reduced_motion() -> bool {
+    if let Ok(v) = std::env::var("RUSTUI_REDUCED_MOTION") {
+        let lower = v.trim().to_ascii_lowercase();
+        if matches!(lower.as_str(), "1" | "true" | "yes" | "on") {
+            return true;
+        }
+        if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
+            return false;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .output()
+            && out.status.success()
+            && String::from_utf8_lossy(&out.stdout).trim() == "1"
+        {
+            return true;
+        }
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return false;
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        if let Ok(v) = std::env::var("GTK_ENABLE_ANIMATIONS")
+            && v.trim() == "0"
+        {
+            return true;
+        }
+        if let Ok(out) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .output()
+            && out.status.success()
+            && String::from_utf8_lossy(&out.stdout).trim() == "false"
+        {
+            return true;
+        }
+        false
     }
 }

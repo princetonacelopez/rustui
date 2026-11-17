@@ -257,10 +257,15 @@ impl Layout for ZStackLayout {
 
     fn place(&self, bounds: Rect, children: &mut Children<'_>) {
         let dir = children.direction();
-        let viewport_w = children.viewport().width;
+        let viewport = children.viewport();
+        let viewport_w = viewport.width;
+        let viewport_h = viewport.height;
         let child_prop = Size::new(Some(bounds.width), Some(bounds.height));
         for i in 0..children.len() {
-            let is_overlay = children.child(i).is_popover_overlay();
+            let (is_overlay, child_off) = {
+                let c = children.child(i);
+                (c.is_popover_overlay(), c.offset())
+            };
             let prop_for_child = if is_overlay {
                 Size::UNSPECIFIED
             } else {
@@ -275,9 +280,18 @@ impl Layout for ZStackLayout {
             let ax = gx.unwrap_or_else(|| self.alignment.horizontal.factor(dir));
             let ay = gy.unwrap_or_else(|| self.alignment.vertical.factor());
             let mut x = bounds.x + (bounds.width - sz.width) * ax;
-            let y = bounds.y + (bounds.height - sz.height) * ay;
-            if is_overlay && viewport_w > 0.0 && x + sz.width > viewport_w - 8.0 {
-                x = (bounds.max_x() - sz.width).max(8.0);
+            let mut y = bounds.y + (bounds.height - sz.height) * ay;
+            if is_overlay {
+                if viewport_w > 0.0 && x + child_off.x + sz.width > viewport_w - 8.0 {
+                    let target_x = (bounds.max_x() - sz.width)
+                        .min(viewport_w - sz.width - 8.0)
+                        .max(8.0);
+                    x = target_x - child_off.x;
+                }
+                if viewport_h > 0.0 && y + child_off.y + sz.height > viewport_h - 8.0 {
+                    let target_y = (viewport_h - sz.height - 8.0).max(8.0);
+                    y = target_y - child_off.y;
+                }
             }
             children.child(i).place(Point::new(x, y), prop_for_child);
         }

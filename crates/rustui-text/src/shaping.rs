@@ -6,9 +6,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use parley::{
-    Alignment as ParleyAlign, AlignmentOptions, Cluster, ClusterSide, FontContext, FontFamily,
+    Affinity, Alignment as ParleyAlign, AlignmentOptions, Cursor, FontContext, FontFamily,
     FontFamilyName, FontStyle as ParleyFontStyle, FontWeight as ParleyFontWeight, GenericFamily,
-    Layout as ParleyLayout, LayoutContext, PositionedLayoutItem, StyleProperty,
+    Layout as ParleyLayout, LayoutContext, PositionedLayoutItem, Selection as ParleySelection,
+    StyleProperty,
 };
 use rustui_core::{
     Color, FontSpec, FontWeight, HorizontalAlignment, Point, Rect, Size, TextNodeData,
@@ -136,39 +137,55 @@ impl std::fmt::Debug for ShapedText {
 impl ShapedText {
     /// Returns the byte offset inside `source_text` closest to local point `(x, y)`.
     pub fn hit_test_point(&self, x: f32, y: f32) -> usize {
-        if let Some((cluster, side)) = Cluster::from_point(&self.layout, x, y) {
-            let range = cluster.text_range();
-            let is_rtl = cluster.is_rtl();
-            match (side, is_rtl) {
-                (ClusterSide::Left, false) | (ClusterSide::Right, true) => range.start,
-                (ClusterSide::Right, false) | (ClusterSide::Left, true) => range.end,
-            }
-        } else if y < 0.0 {
-            0
-        } else {
-            self.source_text.len()
+        if self.source_text.is_empty() || y < 0.0 {
+            return 0;
         }
+        Cursor::from_point(&self.layout, x, y)
+            .index()
+            .min(self.source_text.len())
     }
 
     /// Computes a local caret rectangle for `byte_idx`.
     pub fn caret_rect_for_offset(&self, byte_idx: usize, fallback_height: f32) -> Rect {
+        let h_min = fallback_height.max(16.0);
+        if self.source_text.is_empty() {
+            return Rect::new(0.0, 0.0, 2.0, h_min);
+        }
         let clamped = byte_idx.min(self.source_text.len());
-        if let Some(cluster) = Cluster::from_byte_index(&self.layout, clamped) {
-            let line_m = cluster.line().metrics();
-            let offset_x = cluster.visual_offset().unwrap_or(0.0);
-            let h = line_m.line_height.max(fallback_height);
-            return Rect::new(offset_x, line_m.block_min_coord, 1.5, h);
+        let cursor = Cursor::from_byte_index(&self.layout, clamped, Affinity::Downstream);
+        let bb = cursor.geometry(&self.layout, 2.0);
+        let w = ((bb.x1 - bb.x0) as f32).max(2.0);
+        let h = ((bb.y1 - bb.y0) as f32).max(h_min);
+        Rect::new(bb.x0 as f32, bb.y0 as f32, w, h)
+    }
+
+    /// Computes visual highlight rectangles covering the byte range `[start_byte, end_byte)`.
+    pub fn selection_rects_for_range(
+        &self,
+        start_byte: usize,
+        end_byte: usize,
+        fallback_height: f32,
+    ) -> Vec<Rect> {
+        let s = start_byte.min(end_byte).min(self.source_text.len());
+        let e = start_byte.max(end_byte).min(self.source_text.len());
+        if s == e || self.source_text.is_empty() {
+            return Vec::new();
         }
-        if let Some(last) = self.lines.last() {
-            let x = if clamped >= last.end_byte {
-                last.offset + last.advance
-            } else {
-                last.offset
-            };
-            let top = (last.baseline - fallback_height * 0.8).max(0.0);
-            return Rect::new(x, top, 1.5, last.line_height.max(fallback_height));
-        }
-        Rect::new(0.0, 0.0, 1.5, fallback_height.max(16.0))
+        let sel = ParleySelection::new(
+            Cursor::from_byte_index(&self.layout, s, Affinity::Downstream),
+            Cursor::from_byte_index(&self.layout, e, Affinity::Downstream),
+        );
+        sel.geometry(&self.layout)
+            .into_iter()
+            .map(|(bb, _)| {
+                Rect::new(
+                    bb.x0 as f32,
+                    bb.y0 as f32,
+                    ((bb.x1 - bb.x0) as f32).max(4.0),
+                    ((bb.y1 - bb.y0) as f32).max(fallback_height),
+                )
+            })
+            .collect()
     }
 
     /// Emits shaped glyph runs, underlines, strikethroughs, and inline preedit underline into `list`.
@@ -203,12 +220,13 @@ impl ShapedText {
                     } else {
                         default_color
                     };
-                    let size_q4 = ((run.run().font_size() * 16.0).round() as u32).max(16);
+                    let scale = list.scale_factor.max(1.0);
+                    let size_q4 = ((run.run().font_size() * scale * 16.0).round() as u32).max(16);
 
                     for pg in run.positioned_glyphs() {
                         let gx = origin.x + pg.x;
                         let gy = origin.y + pg.y;
-                        let (base_x, subpixel_x) = SubpixelBin::from_offset(gx);
+                        let (base_phys_x, subpixel_x) = SubpixelBin::from_offset(gx * scale);
                         glyphs.push(GlyphRunItem {
                             key: GlyphKey {
                                 font_id,
@@ -216,7 +234,7 @@ impl ShapedText {
                                 size_q4,
                                 subpixel_x,
                             },
-                            position: Point::new(base_x as f32, gy),
+                            position: Point::new(base_phys_x as f32 / scale, gy),
                             color: effective_color,
                         });
                     }
@@ -360,10 +378,10 @@ impl TextSystem {
 
         let default_rgba = data.color.unwrap_or(Color::BLACK).to_rgba8();
 
-        let scale = scale_factor.max(1.0);
+        let _ = scale_factor;
         let mut builder =
             self.layout_cx
-                .ranged_builder(&mut self.font_cx, &display_text, scale, true);
+                .ranged_builder(&mut self.font_cx, &display_text, 1.0, true);
 
         builder.push_default(StyleProperty::FontSize(data.font.size.max(1.0)));
         builder.push_default(StyleProperty::FontWeight(ParleyFontWeight::new(
@@ -600,19 +618,12 @@ impl TextPainter for ParleyTextPainter<'_> {
         if let Some((sel_s, sel_e)) = data.selection
             && sel_e > sel_s
         {
-            let r0 = shaped.caret_rect_for_offset(sel_s, data.font.size * 1.3);
-            let r1 = shaped.caret_rect_for_offset(sel_e, data.font.size * 1.3);
-            let x0 = r0.x.min(r1.x);
-            let x1 = r0.x.max(r1.x);
-            list.fill_rect(
-                Rect::new(
-                    bounds.x + x0,
-                    bounds.y + r0.y,
-                    (x1 - x0).max(2.0),
-                    r0.height,
-                ),
-                Color::rgba(0.18, 0.50, 0.96, 0.28),
-            );
+            for r in shaped.selection_rects_for_range(sel_s, sel_e, data.font.size * 1.3) {
+                list.fill_rect(
+                    Rect::new(bounds.x + r.x, bounds.y + r.y, r.width, r.height),
+                    Color::rgba(0.15, 0.39, 0.92, 0.26),
+                );
+            }
         }
 
         let preedit_range = data.preedit.as_ref().map(|(pre_text, _, _)| {
@@ -629,18 +640,16 @@ impl TextPainter for ParleyTextPainter<'_> {
             list,
         );
 
-        // Draw active text caret if focused.
+        // Draw high-contrast I-beam caret with top/bottom serif caps when focused.
         if let Some(caret) = data.caret {
             let caret_rect = shaped.caret_rect_for_offset(caret, data.font.size * 1.25);
-            list.fill_rect(
-                Rect::new(
-                    bounds.x + caret_rect.x,
-                    bounds.y + caret_rect.y,
-                    1.5,
-                    caret_rect.height.min(bounds.height.max(14.0)),
-                ),
-                default_color,
-            );
+            let cx = bounds.x + caret_rect.x;
+            let cy = bounds.y + caret_rect.y;
+            let ch = caret_rect.height.min(bounds.height.max(16.0));
+            let caret_color = Color::from_hex(0x2563eb);
+            list.fill_rect(Rect::new(cx, cy, 2.0, ch), caret_color);
+            list.fill_rect(Rect::new(cx - 2.0, cy, 6.0, 1.5), caret_color);
+            list.fill_rect(Rect::new(cx - 2.0, cy + ch - 1.5, 6.0, 1.5), caret_color);
         }
     }
 }

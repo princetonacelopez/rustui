@@ -13,8 +13,8 @@ use crate::node::{
 };
 use crate::signal::{Binding, EffectHandle, Memo, Runtime, State};
 use crate::types::{
-    AccessibilityRole, Animation, Color, ContentMode, CornerRadii, DragEvent, Frame, IntoEdges,
-    IntoPx, KeyEvent, PinchEvent, Point, ScrollEvent, Transition,
+    AccessibilityRole, Animation, Color, ContentMode, CornerRadii, DragEvent, Edge, Frame,
+    IntoEdges, IntoPx, KeyEvent, PinchEvent, Point, ScrollEvent, Transition,
 };
 
 /// Context passed to composite [`View::body`] implementations.
@@ -614,6 +614,59 @@ impl View for ForEach {
     }
 }
 
+fn propagate_corner_radii_down(
+    inner: &mut crate::signal::RuntimeInner,
+    start: NodeId,
+    radii: CornerRadii,
+) {
+    let mut cur = Some(start);
+    while let Some(id) = cur {
+        let next = if let Some(n) = inner.nodes.get_mut(id) {
+            if matches!(n.kind, NodeKind::Modifier) {
+                n.visual_props.corner_radii = radii;
+                if n.layout_props.padding == crate::types::Edges::ZERO
+                    && n.layout_props.frame.is_none()
+                {
+                    n.children.first().copied()
+                } else {
+                    None
+                }
+            } else {
+                if matches!(n.kind, NodeKind::Image(_)) {
+                    n.visual_props.corner_radii = radii;
+                }
+                None
+            }
+        } else {
+            None
+        };
+        cur = next;
+    }
+}
+
+fn inherit_child_corner_radii(
+    inner: &mut crate::signal::RuntimeInner,
+    wrapper: NodeId,
+    child: NodeId,
+) {
+    let child_radii = inner.nodes.get(child).and_then(|c| {
+        if matches!(c.kind, NodeKind::Modifier)
+            && c.layout_props.padding == crate::types::Edges::ZERO
+            && c.visual_props.corner_radii != CornerRadii::ZERO
+        {
+            Some(c.visual_props.corner_radii)
+        } else {
+            None
+        }
+    });
+    if let Some(radii) = child_radii
+        && let Some(w) = inner.nodes.get_mut(wrapper)
+        && w.visual_props.corner_radii == CornerRadii::ZERO
+    {
+        w.visual_props.corner_radii = radii;
+    }
+}
+
 fn build_modifier_wrapper<V: View>(
     inner: V,
     cx: &mut BuildCx,
@@ -628,6 +681,18 @@ fn build_modifier_wrapper<V: View>(
     let mut child_cx = BuildCx::new(cx.runtime.clone(), Some(wrapper));
     let child_id = inner.build_node(&mut child_cx);
     cx.runtime.attach_child(wrapper, child_id);
+    cx.runtime.with_inner_mut(|rt_inner| {
+        let wrapper_radii = rt_inner
+            .nodes
+            .get(wrapper)
+            .map(|n| n.visual_props.corner_radii)
+            .unwrap_or(CornerRadii::ZERO);
+        if wrapper_radii != CornerRadii::ZERO {
+            propagate_corner_radii_down(rt_inner, child_id, wrapper_radii);
+        } else {
+            inherit_child_corner_radii(rt_inner, wrapper, child_id);
+        }
+    });
     wrapper
 }
 
@@ -1102,16 +1167,78 @@ pub trait ViewExt: View + Sized {
     }
 
     fn transition(self, transition: Transition) -> Modified<Self> {
-        Modified::new(self, move |n, _, _| {
-            let anim = n
-                .animation
-                .map(|a| a.animation)
-                .unwrap_or_else(Animation::spring);
-            n.animation = Some(NodeAnimation {
-                animation: anim,
-                transition: Some(transition),
-            });
-        })
+        Modified::with_post_build(
+            self,
+            move |n, _, _| {
+                let anim = n
+                    .animation
+                    .map(|a| a.animation)
+                    .unwrap_or_else(|| Animation::ease_out(0.18));
+                n.animation = Some(NodeAnimation {
+                    animation: anim,
+                    transition: Some(transition),
+                });
+            },
+            move |rt, node| {
+                let anim = rt
+                    .with_inner(|inner| {
+                        inner
+                            .nodes
+                            .get(node)
+                            .and_then(|n| n.animation.map(|a| a.animation))
+                    })
+                    .unwrap_or_else(|| Animation::ease_out(0.18));
+                match transition {
+                    Transition::Opacity | Transition::Scale => {
+                        rt.start_node_animation(
+                            node,
+                            crate::scheduler::AnimProperty::Opacity,
+                            crate::scheduler::AnimValue::Scalar(0.05),
+                            crate::scheduler::AnimValue::Scalar(1.0),
+                            anim,
+                        );
+                    }
+                    Transition::Slide => {
+                        rt.start_node_animation(
+                            node,
+                            crate::scheduler::AnimProperty::Opacity,
+                            crate::scheduler::AnimValue::Scalar(0.05),
+                            crate::scheduler::AnimValue::Scalar(1.0),
+                            anim,
+                        );
+                        rt.start_node_animation(
+                            node,
+                            crate::scheduler::AnimProperty::OffsetY,
+                            crate::scheduler::AnimValue::Scalar(10.0),
+                            crate::scheduler::AnimValue::Scalar(0.0),
+                            anim,
+                        );
+                    }
+                    Transition::Move(edge) => {
+                        rt.start_node_animation(
+                            node,
+                            crate::scheduler::AnimProperty::Opacity,
+                            crate::scheduler::AnimValue::Scalar(0.05),
+                            crate::scheduler::AnimValue::Scalar(1.0),
+                            anim,
+                        );
+                        let (prop, start) = match edge {
+                            Edge::Top => (crate::scheduler::AnimProperty::OffsetY, -12.0),
+                            Edge::Bottom => (crate::scheduler::AnimProperty::OffsetY, 12.0),
+                            Edge::Leading => (crate::scheduler::AnimProperty::OffsetX, -12.0),
+                            Edge::Trailing => (crate::scheduler::AnimProperty::OffsetX, 12.0),
+                        };
+                        rt.start_node_animation(
+                            node,
+                            prop,
+                            crate::scheduler::AnimValue::Scalar(start),
+                            crate::scheduler::AnimValue::Scalar(0.0),
+                            anim,
+                        );
+                    }
+                }
+            },
+        )
     }
 
     fn into_any(self) -> AnyView {
