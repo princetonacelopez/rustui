@@ -38,14 +38,15 @@ jobs:
       - name: Headless examples check
         env:
           RUSTUI_SOFTWARE_RENDER: "1"
+          RUSTUI_HEADLESS: "1"
         run: |
           cargo run -p rustui --bin rustui -- doctor
-          RUSTUI_HEADLESS=1 cargo run -p rustui --example counter
-          RUSTUI_HEADLESS=1 cargo run -p rustui --example todo
-          RUSTUI_HEADLESS=1 cargo run -p rustui --example text_editor
-          RUSTUI_HEADLESS=1 cargo run -p rustui --example dashboard
-          RUSTUI_HEADLESS=1 cargo run -p rustui --example terminal
-          RUSTUI_HEADLESS=1 cargo run -p rustui --example gallery
+          cargo run -p rustui --example counter
+          cargo run -p rustui --example todo
+          cargo run -p rustui --example text_editor
+          cargo run -p rustui --example dashboard
+          cargo run -p rustui --example terminal
+          cargo run -p rustui --example gallery
 
   licenses:
     name: License Check (cargo-deny)
