@@ -273,7 +273,7 @@ pub fn detect_system_theme() -> SystemTheme {
         {
             return SystemTheme::Dark;
         }
-        return SystemTheme::Light;
+        SystemTheme::Light
     }
 
     #[cfg(target_os = "windows")]
@@ -291,7 +291,7 @@ pub fn detect_system_theme() -> SystemTheme {
         {
             return SystemTheme::Dark;
         }
-        return SystemTheme::Light;
+        SystemTheme::Light
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -340,12 +340,12 @@ pub fn detect_reduced_motion() -> bool {
         {
             return true;
         }
-        return false;
+        false
     }
 
     #[cfg(target_os = "windows")]
     {
-        return false;
+        false
     }
 
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]

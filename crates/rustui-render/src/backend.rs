@@ -537,7 +537,8 @@ impl WgpuRenderer {
     ) -> Vec<u8> {
         let w = width.max(1);
         let h = height.max(1);
-        let force_sw = std::env::var("RUSTUI_SOFTWARE_RENDER").is_ok_and(|v| v == "1");
+        let force_sw = std::env::var("RUSTUI_SOFTWARE_RENDER").is_ok_and(|v| v == "1")
+            || (cfg!(target_os = "windows") && std::env::var_os("CI").is_some());
         if !force_sw
             && self.ensure_gpu(None)
             && let Some(bytes) =

@@ -36,6 +36,8 @@ jobs:
       - name: Build CLI release binary
         run: cargo build --release -p rustui --bin rustui
       - name: Verify tests
+        env:
+          RUSTUI_SOFTWARE_RENDER: "1"
         run: cargo test --workspace
       - name: Upload artifact
         uses: actions/upload-artifact@v4
