@@ -1,0 +1,57 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rustui-core",
+    "crates/rustui-layout",
+    "crates/rustui-render",
+    "crates/rustui-text",
+    "crates/rustui-platform",
+    "crates/rustui-widgets",
+    "crates/rustui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/princetonacelopez/rustui"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+rust_2018_idioms = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
+[workspace.dependencies]
+rustui-core = { path = "crates/rustui-core", version = "0.1.0" }
+rustui-layout = { path = "crates/rustui-layout", version = "0.1.0" }
+rustui-render = { path = "crates/rustui-render", version = "0.1.0" }
+rustui-text = { path = "crates/rustui-text", version = "0.1.0" }
+rustui-platform = { path = "crates/rustui-platform", version = "0.1.0" }
+rustui-widgets = { path = "crates/rustui-widgets", version = "0.1.0" }
+
+accesskit = "0.25"
+accesskit_winit = { version = "0.34", default-features = false, features = ["accesskit_unix", "async-io", "rwh_06"] }
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
+fontique = { version = "0.13", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+kurbo = "0.13"
+parley = { version = "0.13", default-features = false, features = ["std", "system"] }
+peniko = "0.6"
+pollster = "0.4"
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
+ropey = "2.0.0-beta.1"
+slotmap = "1.1"
+swash = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-bidi = "0.3"
+unicode-segmentation = "1.13"
+vello = "0.12"
+wgpu = "30.0"
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita", "x11"] }
