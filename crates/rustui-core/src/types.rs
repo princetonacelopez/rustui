@@ -77,7 +77,7 @@ impl Size<Option<f32>> {
         width: None,
         height: None,
     };
-    pub const ZERO: Self = Self {
+    pub const ZERO_PROPOSED: Self = Self {
         width: Some(0.0),
         height: Some(0.0),
     };
