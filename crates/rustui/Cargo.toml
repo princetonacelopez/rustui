@@ -22,10 +22,8 @@ rustui-text.workspace = true
 rustui-platform.workspace = true
 rustui-widgets.workspace = true
 clap.workspace = true
-fontique.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
-wgpu.workspace = true
 
 [dev-dependencies]
 image.workspace = true
+tracing-subscriber.workspace = true
