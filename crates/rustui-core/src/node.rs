@@ -8,8 +8,8 @@ use slotmap::new_key_type;
 
 use crate::signal::{Binding, EffectId, MemoId, SignalKey, StateId, Subscriber};
 use crate::types::{
-    AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii,
-    DragEvent, Edges, Frame, HorizontalAlignment, KeyEvent, PinchEvent, Point, PointerEvent, Rect,
+    AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii, DragEvent,
+    Edges, Frame, HorizontalAlignment, KeyEvent, PinchEvent, Point, PointerEvent, Rect,
     ScrollEvent, Size, TextDirection, Transition,
 };
 
@@ -28,7 +28,9 @@ impl DirtyFlags {
     pub const LAYOUT: Self = Self(1 << 1);
     pub const PAINT: Self = Self(1 << 2);
     pub const ACCESSIBILITY: Self = Self(1 << 3);
-    pub const ALL: Self = Self(Self::REBUILD.0 | Self::LAYOUT.0 | Self::PAINT.0 | Self::ACCESSIBILITY.0);
+    pub const DESCENDANT_LAYOUT: Self = Self(1 << 4);
+    pub const ALL: Self =
+        Self(Self::REBUILD.0 | Self::LAYOUT.0 | Self::PAINT.0 | Self::ACCESSIBILITY.0);
 
     #[inline]
     pub const fn is_empty(self) -> bool {
@@ -381,34 +383,46 @@ pub struct ControlNodeData {
     pub value_text: Option<String>,
 }
 
+/// Builder closure constructing a child subtree into a [`NodeId`].
+pub type NodeBuilderFn = Rc<dyn Fn(&mut crate::view::BuildCx) -> NodeId>;
+/// Switch branch builder closure keyed by hashed case key.
+pub type SwitchBuilderFn = Rc<dyn Fn(u64, &mut crate::view::BuildCx) -> NodeId>;
+/// ForEach keyed rebuilder closure reusing and moving existing children.
+pub type ForEachRebuilderFn =
+    Rc<dyn Fn(&mut crate::view::BuildCx, &mut Vec<(u64, NodeId)>) -> Vec<(u64, NodeId)>>;
+/// IME pre-edit callback type `(text, cursor_range)`.
+pub type ImePreeditFn = Rc<dyn Fn(String, Option<(usize, usize)>)>;
+
 /// Dynamic control-flow node state (`If`, `Switch`, `ForEach`).
 pub enum DynamicNodeData {
     If {
         last_branch: Option<bool>,
         condition: Rc<dyn Fn() -> bool>,
-        then_builder: Rc<dyn Fn(&mut crate::view::BuildCx) -> NodeId>,
-        else_builder: Option<Rc<dyn Fn(&mut crate::view::BuildCx) -> NodeId>>,
+        then_builder: NodeBuilderFn,
+        else_builder: Option<NodeBuilderFn>,
     },
     Switch {
         last_case: Option<u64>,
         selector: Rc<dyn Fn() -> u64>,
-        builder: Rc<dyn Fn(u64, &mut crate::view::BuildCx) -> NodeId>,
+        builder: SwitchBuilderFn,
     },
     ForEach {
         keyed_children: Vec<(u64, NodeId)>,
-        rebuilder: Rc<dyn Fn(&mut crate::view::BuildCx, &mut Vec<(u64, NodeId)>) -> Vec<(u64, NodeId)>>,
+        rebuilder: ForEachRebuilderFn,
     },
 }
 
 impl std::fmt::Debug for DynamicNodeData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::If { last_branch, .. } => {
-                f.debug_struct("If").field("last_branch", last_branch).finish()
-            }
-            Self::Switch { last_case, .. } => {
-                f.debug_struct("Switch").field("last_case", last_case).finish()
-            }
+            Self::If { last_branch, .. } => f
+                .debug_struct("If")
+                .field("last_branch", last_branch)
+                .finish(),
+            Self::Switch { last_case, .. } => f
+                .debug_struct("Switch")
+                .field("last_case", last_case)
+                .finish(),
             Self::ForEach { keyed_children, .. } => f
                 .debug_struct("ForEach")
                 .field("count", &keyed_children.len())
@@ -531,7 +545,7 @@ pub struct EventHandlers {
     pub on_scroll: Option<Rc<dyn Fn(ScrollEvent) -> bool>>,
     pub on_pinch: Option<Rc<dyn Fn(PinchEvent)>>,
     pub on_key: Option<Rc<dyn Fn(KeyEvent) -> bool>>,
-    pub on_ime_preedit: Option<Rc<dyn Fn(String, Option<(usize, usize)>)>>,
+    pub on_ime_preedit: Option<ImePreeditFn>,
     pub on_ime_commit: Option<Rc<dyn Fn(String)>>,
     pub on_accessibility_set_value: Option<Rc<dyn Fn(String)>>,
     pub on_accessibility_increment: Option<Rc<dyn Fn()>>,
@@ -574,7 +588,9 @@ pub struct ReactiveUpdater {
 
 impl std::fmt::Debug for ReactiveUpdater {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReactiveUpdater").field("id", &self.id).finish()
+        f.debug_struct("ReactiveUpdater")
+            .field("id", &self.id)
+            .finish()
     }
 }
 

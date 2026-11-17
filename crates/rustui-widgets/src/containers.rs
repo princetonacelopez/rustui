@@ -3,9 +3,9 @@
 use std::rc::Rc;
 
 use rustui_core::{
-    AccessibilityRole, Alignment, AnyView, Binding, BuildCx, Color, ContainerKind, CornerRadii,
-    Cx, DirtyFlags, Edge, Edges, EmptyView, Frame, HorizontalAlignment, If, NodeId, NodeKind,
-    Point, Primitive, Transition, VerticalAlignment, View, ViewExt,
+    AccessibilityRole, Alignment, AnyView, Binding, BuildCx, Color, ContainerKind, CornerRadii, Cx,
+    DirtyFlags, Edge, Edges, EmptyView, Frame, HorizontalAlignment, If, NodeId, NodeKind, Point,
+    Primitive, Transition, VerticalAlignment, View, ViewExt,
 };
 
 use crate::core_widgets::{Button, Divider, HStack, Spacer, Text, VStack, ZStack};
@@ -82,20 +82,17 @@ impl Primitive for NavigationStack {
         let header = HStack::new(
             12,
             (
-                If::new(
-                    move || depth_for_back.get() > 0,
-                    {
-                        let d = depth_b.clone();
-                        let t = theme_btn.clone();
-                        move || {
-                            Button::new("‹ Back", {
-                                let d = d.clone();
-                                move || d.update(|v| *v = v.saturating_sub(1))
-                            })
-                            .style(ButtonStyle::plain(&t))
-                        }
-                    },
-                ),
+                If::new(move || depth_for_back.get() > 0, {
+                    let d = depth_b.clone();
+                    let t = theme_btn.clone();
+                    move || {
+                        Button::new("‹ Back", {
+                            let d = d.clone();
+                            move || d.update(|v| *v = v.saturating_sub(1))
+                        })
+                        .style(ButtonStyle::plain(&t))
+                    }
+                }),
                 Text::new(move || {
                     let idx = depth_for_title
                         .get()
@@ -325,11 +322,7 @@ impl<C: View, S: View> std::fmt::Debug for Sheet<C, S> {
 }
 
 impl<C: View, S: View> Sheet<C, S> {
-    pub fn new(
-        is_presented: Binding<bool>,
-        content: C,
-        sheet: impl Fn() -> S + 'static,
-    ) -> Self {
+    pub fn new(is_presented: Binding<bool>, content: C, sheet: impl Fn() -> S + 'static) -> Self {
         Self {
             is_presented,
             content,
@@ -351,7 +344,11 @@ impl<C: View, S: View> View for Sheet<C, S> {
                     let dismiss_bg = dismiss.clone();
                     ZStack::new((
                         EmptyView
-                            .frame(Frame::new().max_width(f32::INFINITY).max_height(f32::INFINITY))
+                            .frame(
+                                Frame::new()
+                                    .max_width(f32::INFINITY)
+                                    .max_height(f32::INFINITY),
+                            )
                             .background(Color::rgba(0.0, 0.0, 0.0, 0.4))
                             .on_tap(move || dismiss_bg.set(false)),
                         builder()
@@ -381,11 +378,7 @@ impl<A: View, P: View> std::fmt::Debug for Popover<A, P> {
 }
 
 impl<A: View, P: View> Popover<A, P> {
-    pub fn new(
-        is_presented: Binding<bool>,
-        anchor: A,
-        popover: impl Fn() -> P + 'static,
-    ) -> Self {
+    pub fn new(is_presented: Binding<bool>, anchor: A, popover: impl Fn() -> P + 'static) -> Self {
         Self {
             is_presented,
             anchor,
@@ -426,7 +419,9 @@ pub struct MenuItem {
 
 impl std::fmt::Debug for MenuItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MenuItem").field("label", &self.label).finish()
+        f.debug_struct("MenuItem")
+            .field("label", &self.label)
+            .finish()
     }
 }
 
@@ -463,9 +458,11 @@ impl View for Menu {
 
         Popover::new(
             open.binding(),
-            Button::new(format!("{} ▾", self.label), move || open.update(|o| *o = !*o))
-                .style(ButtonStyle::secondary(&theme))
-                .accessibility_role(AccessibilityRole::Menu),
+            Button::new(format!("{} ▾", self.label), move || {
+                open.update(|o| *o = !*o)
+            })
+            .style(ButtonStyle::secondary(&theme))
+            .accessibility_role(AccessibilityRole::Menu),
             move || {
                 let btns: Vec<AnyView> = items
                     .iter()

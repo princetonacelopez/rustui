@@ -13,13 +13,15 @@ pub use node::{
     LayoutValueMap, Node, NodeAnimation, NodeId, NodeKind, ScrollAxes, ScrollNodeData,
     ShaderNodeData, TextNodeData, TextSpanData, TruncationMode, VirtualListNodeData, VisualProps,
 };
-pub use scheduler::{with_animation, AnimProperty, AnimValue, FrameMetrics, Scheduler};
-pub use signal::{Binding, EffectHandle, Memo, Observable, Runtime, RuntimeInner, State, TaskSender};
+pub use scheduler::{AnimProperty, AnimValue, FrameMetrics, Scheduler, with_animation};
+pub use signal::{
+    Binding, EffectHandle, Memo, Observable, Runtime, RuntimeInner, State, TaskSender,
+};
 pub use types::{
-    AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii,
-    DragEvent, Edge, Edges, Frame, HorizontalAlignment, IntoEdges, IntoPx, KeyCode, KeyEvent,
-    Modifiers, PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Rect, ScrollEvent,
-    SemanticColor, Size, TextDirection, Transition, VerticalAlignment,
+    AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii, DragEvent,
+    Edge, Edges, Frame, HorizontalAlignment, IntoEdges, IntoPx, KeyCode, KeyEvent, Modifiers,
+    PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Rect, ScrollEvent, SemanticColor,
+    Size, TextDirection, Transition, VerticalAlignment,
 };
 pub use view::{
     AnyView, Background, BuildCx, Cx, EmptyView, ForEach, Framed, If, IntoTextSource, Modified,
@@ -275,7 +277,8 @@ mod tests {
         .build_node(&mut bcx);
 
         assert_eq!(builds.get(), 3);
-        let original_children = rt.with_inner(|inner| inner.nodes.get(fe).unwrap().children.clone());
+        let original_children =
+            rt.with_inner(|inner| inner.nodes.get(fe).unwrap().children.clone());
         assert_eq!(original_children.len(), 3);
 
         // Reorder [3, 1, 2]: zero new nodes should be built!
@@ -288,12 +291,20 @@ mod tests {
         });
         let (_, rebuilds) = rt.flush_reactive();
         assert_eq!(rebuilds, 1);
-        assert_eq!(builds.get(), 3, "reordering ForEach must move nodes, not recreate");
+        assert_eq!(
+            builds.get(),
+            3,
+            "reordering ForEach must move nodes, not recreate"
+        );
 
         let reordered = rt.with_inner(|inner| inner.nodes.get(fe).unwrap().children.clone());
         assert_eq!(
             reordered,
-            vec![original_children[2], original_children[0], original_children[1]]
+            vec![
+                original_children[2],
+                original_children[0],
+                original_children[1]
+            ]
         );
     }
 
@@ -316,7 +327,9 @@ mod tests {
         rt.flush_effects();
         assert_eq!(effect_seen.get(), 5);
 
-        let doubled = count.binding().map(|v| v * 2, |orig, new_v| *orig = new_v / 2);
+        let doubled = count
+            .binding()
+            .map(|v| v * 2, |orig, new_v| *orig = new_v / 2);
         rt.enter(|| {
             assert_eq!(doubled.get(), 10);
             doubled.set(24);
@@ -348,8 +361,7 @@ mod tests {
         let mut bcx = BuildCx::new(rt.clone(), None);
         let root_state = rt.create_state(0, None);
         let view = TestColumn((
-            TestLabel(format_text(root_state))
-                .frame(Frame::fixed(120.0, 32.0)),
+            TestLabel(format_text(root_state)).frame(Frame::fixed(120.0, 32.0)),
             TestLabel(IntoTextSource::into_text_source("sibling")),
         ));
         let root = view.build_node(&mut bcx);

@@ -452,15 +452,19 @@ impl<'a> LayoutContext<'a> {
             }
             NodeLayoutAction::Text(t) => self.measurer.measure_text(&t, proposed.width),
             NodeLayoutAction::Image(intrinsic) => Size::new(
-                proposed.width.filter(|w| w.is_finite()).unwrap_or(intrinsic.width),
+                proposed
+                    .width
+                    .filter(|w| w.is_finite())
+                    .unwrap_or(intrinsic.width),
                 proposed
                     .height
                     .filter(|h| h.is_finite())
                     .unwrap_or(intrinsic.height),
             ),
-            NodeLayoutAction::Spacer(min_len) => {
-                SpacerLayout { min_length: min_len }.measure(proposed)
+            NodeLayoutAction::Spacer(min_len) => SpacerLayout {
+                min_length: min_len,
             }
+            .measure(proposed),
             NodeLayoutAction::Divider(thickness) => Size::new(
                 proposed.width.filter(|w| w.is_finite()).unwrap_or(120.0),
                 thickness,
@@ -470,19 +474,19 @@ impl<'a> LayoutContext<'a> {
                 let mut children_ids = child.into_iter().collect::<Vec<_>>();
                 let scroll_layout = ScrollViewLayout { axes };
                 let child_size = if let Some(&cid) = children_ids.first() {
-                    let child_prop = Size::new(
-                        match axes {
-                            rustui_core::ScrollAxes::Horizontal
-                            | rustui_core::ScrollAxes::Both => None,
-                            rustui_core::ScrollAxes::Vertical => proposed.width,
-                        },
-                        match axes {
-                            rustui_core::ScrollAxes::Vertical | rustui_core::ScrollAxes::Both => {
-                                None
-                            }
-                            rustui_core::ScrollAxes::Horizontal => proposed.height,
-                        },
-                    );
+                    let child_prop =
+                        Size::new(
+                            match axes {
+                                rustui_core::ScrollAxes::Horizontal
+                                | rustui_core::ScrollAxes::Both => None,
+                                rustui_core::ScrollAxes::Vertical => proposed.width,
+                            },
+                            match axes {
+                                rustui_core::ScrollAxes::Vertical
+                                | rustui_core::ScrollAxes::Both => None,
+                                rustui_core::ScrollAxes::Horizontal => proposed.height,
+                            },
+                        );
                     self.measure_node(cid, child_prop)
                 } else {
                     Size::ZERO
@@ -515,16 +519,12 @@ impl<'a> LayoutContext<'a> {
                         .unwrap_or_default()
                 });
                 let layout = LazyVStackLayout::from_data(&vl);
-                // Children::measure calls child measurements in place without extra allocations.
-                let sz = {
-                    let mut children = Children {
-                        ids: std::mem::take(&mut kids),
-                        direction: dir,
-                        engine: self,
-                    };
-                    layout.size(proposed, &mut children)
+                let mut children = Children {
+                    ids: std::mem::take(&mut kids),
+                    direction: dir,
+                    engine: self,
                 };
-                sz
+                layout.size(proposed, &mut children)
             }
             NodeLayoutAction::Custom(layout, kids) => {
                 let mut children = Children {
@@ -735,6 +735,65 @@ impl<'a> LayoutContext<'a> {
     }
 
     pub fn place_node(&mut self, node_id: NodeId, origin: Point, proposed: Size<Option<f32>>) {
+        let fast_path = self.runtime.with_inner(|inner| {
+            let n = inner.nodes.get(node_id)?;
+            if n.layout_cache.last_proposal != Some(proposed) {
+                return None;
+            }
+            let exp_x = origin.x + n.layout_props.offset.x;
+            let exp_y = origin.y + n.layout_props.offset.y;
+            if (n.layout_cache.bounds.x - exp_x).abs() > 0.01
+                || (n.layout_cache.bounds.y - exp_y).abs() > 0.01
+            {
+                return None;
+            }
+            if !n
+                .dirty
+                .intersects(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT)
+            {
+                return Some(Vec::new());
+            }
+            if !n.dirty.intersects(DirtyFlags::LAYOUT) {
+                let dirty_kids: Vec<(NodeId, Point, Size<Option<f32>>)> = n
+                    .children
+                    .iter()
+                    .copied()
+                    .filter_map(|cid| {
+                        let c = inner.nodes.get(cid)?;
+                        if c.dirty
+                            .intersects(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT)
+                        {
+                            let o = Point::new(
+                                c.layout_cache.bounds.x - c.layout_props.offset.x,
+                                c.layout_cache.bounds.y - c.layout_props.offset.y,
+                            );
+                            let p = c.layout_cache.last_proposal.unwrap_or(Size::new(
+                                Some(c.layout_cache.bounds.width),
+                                Some(c.layout_cache.bounds.height),
+                            ));
+                            Some((cid, o, p))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                return Some(dirty_kids);
+            }
+            None
+        });
+
+        if let Some(dirty_kids) = fast_path {
+            self.runtime.with_inner_mut(|inner| {
+                if let Some(n) = inner.nodes.get_mut(node_id) {
+                    n.dirty.remove(DirtyFlags::DESCENDANT_LAYOUT);
+                }
+            });
+            for (cid, child_origin, child_prop) in dirty_kids {
+                self.place_node(cid, child_origin, child_prop);
+            }
+            return;
+        }
+
         let size = self.measure_node(node_id, proposed);
         let dir = self.resolve_direction(node_id);
 
@@ -760,9 +819,15 @@ impl<'a> LayoutContext<'a> {
                 return (Point::ZERO, PlaceAction::Hidden);
             };
             let offset = n.layout_props.offset;
-            let bounds = Rect::new(origin.x + offset.x, origin.y + offset.y, size.width, size.height);
+            let bounds = Rect::new(
+                origin.x + offset.x,
+                origin.y + offset.y,
+                size.width,
+                size.height,
+            );
             n.layout_cache.bounds = bounds;
-            n.dirty.remove(DirtyFlags::LAYOUT);
+            n.dirty
+                .remove(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT);
 
             if n.visual_props.hidden {
                 return (offset, PlaceAction::Hidden);
@@ -811,7 +876,12 @@ impl<'a> LayoutContext<'a> {
             (offset, act)
         });
 
-        let bounds = Rect::new(origin.x + offset.x, origin.y + offset.y, size.width, size.height);
+        let bounds = Rect::new(
+            origin.x + offset.x,
+            origin.y + offset.y,
+            size.width,
+            size.height,
+        );
 
         match action {
             PlaceAction::Hidden | PlaceAction::Leaf => {}
@@ -834,23 +904,21 @@ impl<'a> LayoutContext<'a> {
             }
             PlaceAction::Scroll(scroll, child) => {
                 if let Some(cid) = child {
-                    let child_prop = Size::new(
-                        match scroll.axes {
-                            rustui_core::ScrollAxes::Horizontal
-                            | rustui_core::ScrollAxes::Both => Some(scroll.content_size.width),
-                            rustui_core::ScrollAxes::Vertical => Some(bounds.width),
-                        },
-                        match scroll.axes {
-                            rustui_core::ScrollAxes::Vertical | rustui_core::ScrollAxes::Both => {
-                                Some(scroll.content_size.height)
-                            }
-                            rustui_core::ScrollAxes::Horizontal => Some(bounds.height),
-                        },
-                    );
-                    let child_origin = Point::new(
-                        bounds.x - scroll.offset.x,
-                        bounds.y - scroll.offset.y,
-                    );
+                    let child_prop =
+                        Size::new(
+                            match scroll.axes {
+                                rustui_core::ScrollAxes::Horizontal
+                                | rustui_core::ScrollAxes::Both => Some(scroll.content_size.width),
+                                rustui_core::ScrollAxes::Vertical => Some(bounds.width),
+                            },
+                            match scroll.axes {
+                                rustui_core::ScrollAxes::Vertical
+                                | rustui_core::ScrollAxes::Both => Some(scroll.content_size.height),
+                                rustui_core::ScrollAxes::Horizontal => Some(bounds.height),
+                            },
+                        );
+                    let child_origin =
+                        Point::new(bounds.x - scroll.offset.x, bounds.y - scroll.offset.y);
                     self.place_node(cid, child_origin, child_prop);
                 }
             }

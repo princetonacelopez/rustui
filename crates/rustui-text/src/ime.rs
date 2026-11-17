@@ -30,12 +30,7 @@ impl ImeState {
     }
 
     /// Updates inline pre-edit string and candidate anchor position from the caret rect.
-    pub fn set_preedit(
-        &mut self,
-        text: String,
-        cursor: Option<(usize, usize)>,
-        caret_rect: Rect,
-    ) {
+    pub fn set_preedit(&mut self, text: String, cursor: Option<(usize, usize)>, caret_rect: Rect) {
         self.enabled = true;
         self.preedit_text = text;
         self.preedit_cursor = cursor;

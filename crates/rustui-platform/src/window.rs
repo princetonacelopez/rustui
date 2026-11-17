@@ -11,7 +11,7 @@ use rustui_core::{
 };
 use rustui_layout::LayoutEngine;
 use rustui_render::{
-    emit_display_list, DamageTracker, GlyphAtlas, InspectorOverlay, ResourceLoader, WgpuRenderer,
+    DamageTracker, GlyphAtlas, InspectorOverlay, ResourceLoader, WgpuRenderer, emit_display_list,
 };
 use rustui_text::{ParleyTextMeasurer, ParleyTextPainter, TextSystem};
 use winit::application::ApplicationHandler;
@@ -250,11 +250,9 @@ impl WindowManager {
             None
         };
 
-        if let (Some(surf), Some(cfg), Some((device, _))) = (
-            &surface,
-            &surface_config,
-            self.renderer.device_and_queue(),
-        ) {
+        if let (Some(surf), Some(cfg), Some((device, _))) =
+            (&surface, &surface_config, self.renderer.device_and_queue())
+        {
             surf.configure(device, cfg);
         }
 
@@ -343,7 +341,10 @@ impl WindowManager {
                 win.window.set_ime_allowed(true);
                 win.window.set_ime_cursor_area(
                     LogicalPosition::new(f64::from(rect.x), f64::from(rect.y)),
-                    LogicalSize::new(f64::from(rect.width.max(2.0)), f64::from(rect.height.max(18.0))),
+                    LogicalSize::new(
+                        f64::from(rect.width.max(2.0)),
+                        f64::from(rect.height.max(18.0)),
+                    ),
                 );
             } else {
                 win.window.set_ime_allowed(false);
@@ -484,10 +485,8 @@ impl ApplicationHandler<AppEvent> for WindowManager {
                 if let Some(win) = self.windows.get_mut(&window_id) {
                     let w = phys.width.max(1);
                     let h = phys.height.max(1);
-                    win.logical_size = Size::new(
-                        w as f32 / win.scale_factor,
-                        h as f32 / win.scale_factor,
-                    );
+                    win.logical_size =
+                        Size::new(w as f32 / win.scale_factor, h as f32 / win.scale_factor);
                     if let (Some(surf), Some(cfg), Some((dev, _))) = (
                         &win.surface,
                         &mut win.surface_config,
@@ -595,10 +594,9 @@ impl ApplicationHandler<AppEvent> for WindowManager {
                 if let Some(win) = self.windows.get_mut(&window_id) {
                     let (dx, dy) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (x * 24.0, y * 24.0),
-                        MouseScrollDelta::PixelDelta(p) => (
-                            p.x as f32 / win.scale_factor,
-                            p.y as f32 / win.scale_factor,
-                        ),
+                        MouseScrollDelta::PixelDelta(p) => {
+                            (p.x as f32 / win.scale_factor, p.y as f32 / win.scale_factor)
+                        }
                     };
                     win.gestures.handle_scroll(
                         &self.runtime,
@@ -633,8 +631,12 @@ impl ApplicationHandler<AppEvent> for WindowManager {
                 if let Some(win) = self.windows.get_mut(&window_id) {
                     match ime {
                         Ime::Preedit(text, cursor) => {
-                            win.gestures
-                                .handle_ime_preedit(&self.runtime, &win.focus, text, cursor);
+                            win.gestures.handle_ime_preedit(
+                                &self.runtime,
+                                &win.focus,
+                                text,
+                                cursor,
+                            );
                         }
                         Ime::Commit(text) => {
                             win.gestures

@@ -46,8 +46,15 @@ pub enum GradientKind {
 pub enum PathOp {
     MoveTo(Point),
     LineTo(Point),
-    QuadTo { ctrl: Point, to: Point },
-    CubicTo { ctrl1: Point, ctrl2: Point, to: Point },
+    QuadTo {
+        ctrl: Point,
+        to: Point,
+    },
+    CubicTo {
+        ctrl1: Point,
+        ctrl2: Point,
+        to: Point,
+    },
     Close,
 }
 
@@ -290,13 +297,7 @@ impl DisplayList {
         });
     }
 
-    pub fn draw_nine_slice(
-        &mut self,
-        rect: Rect,
-        image_id: ImageId,
-        slice: Edges,
-        tint: Color,
-    ) {
+    pub fn draw_nine_slice(&mut self, rect: Rect, image_id: ImageId, slice: Edges, tint: Color) {
         self.commands.push(DisplayCommand::DrawNineSlice {
             rect: self.snap(rect),
             image_id,
@@ -357,7 +358,8 @@ impl DisplayList {
     }
 
     pub fn push_clip_rect(&mut self, rect: Rect) {
-        self.commands.push(DisplayCommand::PushClipRect(self.snap(rect)));
+        self.commands
+            .push(DisplayCommand::PushClipRect(self.snap(rect)));
     }
 
     pub fn push_clip_rounded_rect(&mut self, rect: Rect, radii: CornerRadii) {

@@ -8,7 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::node::{
-    DirtyFlags, DynamicNodeData, HookSlot, Node, NodeAnimation, NodeId, NodeKind,
+    DirtyFlags, DynamicNodeData, ForEachRebuilderFn, HookSlot, Node, NodeAnimation, NodeBuilderFn,
+    NodeId, NodeKind, SwitchBuilderFn,
 };
 use crate::signal::{Binding, EffectHandle, Memo, Runtime, State};
 use crate::types::{
@@ -52,10 +53,7 @@ impl Cx {
         let expected_type = TypeId::of::<T>();
 
         let existing = self.runtime.with_inner(|inner| {
-            let node = inner
-                .nodes
-                .get(self.node_id)
-                .expect("Cx node disappeared");
+            let node = inner.nodes.get(self.node_id).expect("Cx node disappeared");
             node.hook_slots.get(slot_idx).cloned()
         });
 
@@ -415,8 +413,8 @@ impl IntoTextSource for TextSource {
 /// Reactive conditional view primitive (`If`).
 pub struct If {
     condition: Rc<dyn Fn() -> bool>,
-    then_builder: Rc<dyn Fn(&mut BuildCx) -> NodeId>,
-    else_builder: Option<Rc<dyn Fn(&mut BuildCx) -> NodeId>>,
+    then_builder: NodeBuilderFn,
+    else_builder: Option<NodeBuilderFn>,
 }
 
 impl std::fmt::Debug for If {
@@ -469,8 +467,8 @@ impl View for If {
 /// Reactive multi-branch switch primitive (`Switch`).
 pub struct Switch {
     selector: Rc<dyn Fn() -> u64>,
-    cases: HashMap<u64, Rc<dyn Fn(&mut BuildCx) -> NodeId>>,
-    default: Option<Rc<dyn Fn(&mut BuildCx) -> NodeId>>,
+    cases: HashMap<u64, NodeBuilderFn>,
+    default: Option<NodeBuilderFn>,
 }
 
 impl std::fmt::Debug for Switch {
@@ -497,10 +495,8 @@ impl Switch {
     }
 
     pub fn case<K: Hash, V: View>(mut self, key: K, builder: impl Fn() -> V + 'static) -> Self {
-        self.cases.insert(
-            hash_key(&key),
-            Rc::new(move |cx| builder().build_node(cx)),
-        );
+        self.cases
+            .insert(hash_key(&key), Rc::new(move |cx| builder().build_node(cx)));
         self
     }
 
@@ -514,7 +510,7 @@ impl Primitive for Switch {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let cases = self.cases;
         let default = self.default;
-        let builder: Rc<dyn Fn(u64, &mut BuildCx) -> NodeId> = Rc::new(move |case_key, bcx| {
+        let builder: SwitchBuilderFn = Rc::new(move |case_key, bcx| {
             if let Some(b) = cases.get(&case_key) {
                 b(bcx)
             } else if let Some(d) = &default {
@@ -545,7 +541,7 @@ impl View for Switch {
 
 /// Keyed dynamic collection view primitive (`ForEach`) that reuses and moves nodes on reorder.
 pub struct ForEach {
-    rebuilder: Rc<dyn Fn(&mut BuildCx, &mut Vec<(u64, NodeId)>) -> Vec<(u64, NodeId)>>,
+    rebuilder: ForEachRebuilderFn,
 }
 
 impl std::fmt::Debug for ForEach {
@@ -565,34 +561,33 @@ impl ForEach {
         K: Hash + 'static,
         V: View,
     {
-        let rebuilder: Rc<dyn Fn(&mut BuildCx, &mut Vec<(u64, NodeId)>) -> Vec<(u64, NodeId)>> =
-            Rc::new(move |cx, existing| {
-                let list = items();
-                let mut existing_map: HashMap<u64, NodeId> = existing.drain(..).collect();
-                let mut seen = HashSet::with_capacity(list.len());
-                let mut next = Vec::with_capacity(list.len());
+        let rebuilder: ForEachRebuilderFn = Rc::new(move |cx, existing| {
+            let list = items();
+            let mut existing_map: HashMap<u64, NodeId> = existing.drain(..).collect();
+            let mut seen = HashSet::with_capacity(list.len());
+            let mut next = Vec::with_capacity(list.len());
 
-                for item in list {
-                    let mut key = hash_key(&id(&item));
-                    while !seen.insert(key) {
-                        key = key.wrapping_add(1);
-                    }
-                    let node_id = if let Some(reused_id) = existing_map.remove(&key) {
-                        reused_id
-                    } else {
-                        let built = builder(item);
-                        let rt = cx.runtime.clone();
-                        rt.enter(|| built.build_node(cx))
-                    };
-                    next.push((key, node_id));
+            for item in list {
+                let mut key = hash_key(&id(&item));
+                while !seen.insert(key) {
+                    key = key.wrapping_add(1);
                 }
+                let node_id = if let Some(reused_id) = existing_map.remove(&key) {
+                    reused_id
+                } else {
+                    let built = builder(item);
+                    let rt = cx.runtime.clone();
+                    rt.enter(|| built.build_node(cx))
+                };
+                next.push((key, node_id));
+            }
 
-                // Restore unused old entries back into `existing` so the caller can dispose them.
-                for (k, old_id) in existing_map {
-                    existing.push((k, old_id));
-                }
-                next
-            });
+            // Restore unused old entries back into `existing` so the caller can dispose them.
+            for (k, old_id) in existing_map {
+                existing.push((k, old_id));
+            }
+            next
+        });
 
         Self { rebuilder }
     }
@@ -746,11 +741,14 @@ impl<V: View> View for OnTap<V> {
     }
 }
 
+type NodeConfigureFn = Box<dyn FnOnce(&mut Node, &Runtime, NodeId)>;
+type NodePostBuildFn = Box<dyn FnOnce(&Runtime, NodeId)>;
+
 /// Generic modifier wrapper shared by all remaining modifiers to avoid redundant boilerplate.
 pub struct Modified<V: View> {
     inner: V,
-    configure: Box<dyn FnOnce(&mut Node, &Runtime, NodeId)>,
-    post_build: Option<Box<dyn FnOnce(&Runtime, NodeId)>>,
+    configure: NodeConfigureFn,
+    post_build: Option<NodePostBuildFn>,
 }
 
 impl<V: View> std::fmt::Debug for Modified<V> {

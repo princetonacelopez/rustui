@@ -7,7 +7,7 @@ pub mod input_widgets;
 pub mod theme;
 
 pub use collections::{
-    format_virtual_row_text, LazyVStack, List, ScrollView, Table, TableColumn, Tree, TreeItemData,
+    LazyVStack, List, ScrollView, Table, TableColumn, Tree, TreeItemData, format_virtual_row_text,
 };
 pub use containers::{
     Menu, MenuItem, NavigationPage, NavigationStack, Popover, Sheet, SplitView, TabItem, TabView,
@@ -23,7 +23,7 @@ pub use theme::{ButtonStyle, Font, ListStyle, Theme, ThemeColors, ToggleStyle};
 #[cfg(test)]
 mod tests {
     use rustui_core::{
-        with_animation, Animation, Cx, KeyCode, Modifiers, Point, Size, View, ViewExt,
+        Animation, Cx, KeyCode, Modifiers, Point, Size, View, ViewExt, with_animation,
     };
     use rustui_platform::HeadlessSimulator;
 
@@ -235,7 +235,9 @@ mod tests {
         }
 
         let mut sim = HeadlessSimulator::new(Demo, Size::new(800.0, 600.0));
-        let png = with_animation(Animation::spring(), || sim.render_png().expect("render demo"));
+        let png = with_animation(Animation::spring(), || {
+            sim.render_png().expect("render demo")
+        });
         assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n");
     }
 }

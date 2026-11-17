@@ -344,9 +344,9 @@ impl GestureRecognizer {
                             || HitTester::ancestor_chain(runtime, hit.unwrap_or(captured))
                                 .contains(&captured)
                         {
-                            let held_long = self
-                                .press_time
-                                .is_some_and(|t| now.duration_since(t) >= Duration::from_millis(500));
+                            let held_long = self.press_time.is_some_and(|t| {
+                                now.duration_since(t) >= Duration::from_millis(500)
+                            });
                             if held_long {
                                 self.dispatch_long_press(runtime, captured);
                             } else if self.click_count >= 2 {
@@ -370,12 +370,8 @@ impl GestureRecognizer {
         let target = HitTester::hit_test(runtime, root, event.position).unwrap_or(root);
         let chain = HitTester::ancestor_chain(runtime, target);
         for id in chain {
-            let cb = runtime.with_inner(|inner| {
-                inner
-                    .nodes
-                    .get(id)
-                    .and_then(|n| n.events.on_scroll.clone())
-            });
+            let cb = runtime
+                .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_scroll.clone()));
             if let Some(f) = cb {
                 let handled = runtime.enter(|| f(event));
                 if handled {
@@ -428,12 +424,8 @@ impl GestureRecognizer {
     pub fn handle_pinch(&mut self, runtime: &Runtime, root: NodeId, event: PinchEvent) {
         let target = HitTester::hit_test(runtime, root, event.position).unwrap_or(root);
         for id in HitTester::ancestor_chain(runtime, target) {
-            let cb = runtime.with_inner(|inner| {
-                inner
-                    .nodes
-                    .get(id)
-                    .and_then(|n| n.events.on_pinch.clone())
-            });
+            let cb = runtime
+                .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_pinch.clone()));
             if let Some(f) = cb {
                 runtime.enter(|| f(event));
                 return;
@@ -450,9 +442,8 @@ impl GestureRecognizer {
     ) -> bool {
         if let Some(focused) = focus.focused_node() {
             for id in HitTester::ancestor_chain(runtime, focused) {
-                let cb = runtime.with_inner(|inner| {
-                    inner.nodes.get(id).and_then(|n| n.events.on_key.clone())
-                });
+                let cb = runtime
+                    .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_key.clone()));
                 if let Some(f) = cb {
                     let handled = runtime.enter(|| f(event.clone()));
                     if handled {
@@ -462,12 +453,8 @@ impl GestureRecognizer {
             }
         } else {
             // Check root-level key listener if nothing is focused.
-            let cb = runtime.with_inner(|inner| {
-                inner
-                    .nodes
-                    .get(root)
-                    .and_then(|n| n.events.on_key.clone())
-            });
+            let cb = runtime
+                .with_inner(|inner| inner.nodes.get(root).and_then(|n| n.events.on_key.clone()));
             if let Some(f) = cb
                 && runtime.enter(|| f(event.clone()))
             {
@@ -570,9 +557,8 @@ impl GestureRecognizer {
 
     fn dispatch_drag(&self, runtime: &Runtime, node_id: NodeId, event: DragEvent) {
         for id in HitTester::ancestor_chain(runtime, node_id) {
-            let cb = runtime.with_inner(|inner| {
-                inner.nodes.get(id).and_then(|n| n.events.on_drag.clone())
-            });
+            let cb = runtime
+                .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_drag.clone()));
             if let Some(f) = cb {
                 runtime.enter(|| f(event));
                 return;
@@ -582,9 +568,8 @@ impl GestureRecognizer {
 
     fn dispatch_tap(&self, runtime: &Runtime, node_id: NodeId) {
         for id in HitTester::ancestor_chain(runtime, node_id) {
-            let cb = runtime.with_inner(|inner| {
-                inner.nodes.get(id).and_then(|n| n.events.on_tap.clone())
-            });
+            let cb = runtime
+                .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_tap.clone()));
             if let Some(f) = cb {
                 runtime.enter(|| f());
                 return;

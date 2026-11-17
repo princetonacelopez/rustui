@@ -164,6 +164,9 @@ impl Theme {
     }
 }
 
+/// Custom button decorator closure `(is_hovered, is_pressed, &Theme) -> (background, foreground)`.
+pub type ButtonDecoratorFn = Rc<dyn Fn(bool, bool, &Theme) -> (Color, Color)>;
+
 /// Visual styling descriptor for [`Button`] subtrees (`ButtonStyle` protocol).
 #[derive(Clone)]
 pub struct ButtonStyle {
@@ -174,7 +177,7 @@ pub struct ButtonStyle {
     pub border: Option<(f32, Color)>,
     pub corner_radius: f32,
     pub padding: Edges,
-    pub custom_decorator: Option<Rc<dyn Fn(bool, bool, &Theme) -> (Color, Color)>>,
+    pub custom_decorator: Option<ButtonDecoratorFn>,
 }
 
 impl std::fmt::Debug for ButtonStyle {

@@ -69,12 +69,7 @@ impl InspectorOverlay {
         }
 
         if self.show_stats_badge {
-            let badge_rect = Rect::new(
-                (viewport.max_x() - 220.0).max(8.0),
-                8.0,
-                212.0,
-                52.0,
-            );
+            let badge_rect = Rect::new((viewport.max_x() - 220.0).max(8.0), 8.0, 212.0, 52.0);
             list.fill_rounded_rect(
                 badge_rect,
                 CornerRadii::all(6.0),

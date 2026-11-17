@@ -1019,11 +1019,7 @@ impl Animation {
                     1.0 - decay * (1.0 + omega0 * t)
                 };
                 let finished = t > 2.5 || ((1.0 - val).abs() < 0.002 && t > 0.35);
-                if finished {
-                    (1.0, true)
-                } else {
-                    (val, false)
-                }
+                if finished { (1.0, true) } else { (val, false) }
             }
         }
     }

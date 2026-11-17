@@ -7,13 +7,13 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
-use slotmap::{new_key_type, SlotMap};
+use slotmap::{SlotMap, new_key_type};
 
-use crate::node::{DirtyFlags, Node, NodeId};
-use crate::scheduler::{current_animation, AnimProperty, AnimValue, Scheduler};
+use crate::node::{DirtyFlags, ForEachRebuilderFn, Node, NodeBuilderFn, NodeId, SwitchBuilderFn};
+use crate::scheduler::{AnimProperty, AnimValue, Scheduler, current_animation};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -73,11 +73,15 @@ struct EffectEntry {
     deps: Vec<SignalKey>,
 }
 
+/// Type-erased reactive property applicator closure.
+pub type ReactiveApplyFn = Rc<dyn Fn(&mut Node, Box<dyn Any>) -> DirtyFlags>;
+type SpawnCallback = Box<dyn FnOnce(Box<dyn Any + Send>)>;
+
 /// Computes a new typed value from reactive signals and applies it to a retained [`Node`].
 pub struct NodeReactiveEntry {
     pub node: NodeId,
     pub compute: Rc<dyn Fn() -> Box<dyn Any>>,
-    pub apply: Rc<dyn Fn(&mut Node, Box<dyn Any>) -> DirtyFlags>,
+    pub apply: ReactiveApplyFn,
     pub deps: Vec<SignalKey>,
 }
 
@@ -133,7 +137,7 @@ pub struct RuntimeInner {
     task_rx: mpsc::Receiver<UiTask>,
     wake_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     next_updater_uid: u64,
-    spawn_callbacks: HashMap<u64, Box<dyn FnOnce(Box<dyn Any + Send>)>>,
+    spawn_callbacks: HashMap<u64, SpawnCallback>,
     next_spawn_id: u64,
 }
 
@@ -267,7 +271,10 @@ impl RuntimeInner {
                     if self.pending_rebuild_set.insert(node_id) {
                         self.pending_rebuilds.push(node_id);
                     }
-                    self.mark_dirty(node_id, DirtyFlags::REBUILD | DirtyFlags::LAYOUT | DirtyFlags::PAINT);
+                    self.mark_dirty(
+                        node_id,
+                        DirtyFlags::REBUILD | DirtyFlags::LAYOUT | DirtyFlags::PAINT,
+                    );
                 }
             }
         }
@@ -283,7 +290,8 @@ impl RuntimeInner {
         }
         self.scheduler.request_redraw();
 
-        let mut propagate_layout = flags.intersects(DirtyFlags::LAYOUT);
+        let had_layout = flags.intersects(DirtyFlags::LAYOUT);
+        let mut propagate_layout = had_layout;
         let propagate_paint = flags.intersects(DirtyFlags::PAINT);
         let propagate_a11y = flags.intersects(DirtyFlags::ACCESSIBILITY);
         let mut cursor = node.parent;
@@ -303,8 +311,13 @@ impl RuntimeInner {
                     hit_fixed_boundary = true;
                     let _ = hit_fixed_boundary;
                 }
-            } else if propagate_paint {
-                parent.dirty.insert(DirtyFlags::PAINT);
+            } else {
+                if had_layout {
+                    parent.dirty.insert(DirtyFlags::DESCENDANT_LAYOUT);
+                }
+                if propagate_paint {
+                    parent.dirty.insert(DirtyFlags::PAINT);
+                }
             }
             if propagate_a11y {
                 parent.dirty.insert(DirtyFlags::ACCESSIBILITY);
@@ -449,7 +462,10 @@ impl Runtime {
     /// Reads a state value with dependency tracking if inside a reactive scope.
     pub fn get_state<T: Clone + 'static>(&self, state: State<T>) -> T {
         let mut inner = self.inner.borrow_mut();
-        assert_eq!(inner.id, state.runtime_id, "State accessed from wrong Runtime");
+        assert_eq!(
+            inner.id, state.runtime_id,
+            "State accessed from wrong Runtime"
+        );
         let val = inner
             .states
             .get(state.id)
@@ -467,7 +483,10 @@ impl Runtime {
     /// Reads a state value without subscribing to future changes.
     pub fn get_state_untracked<T: Clone + 'static>(&self, state: State<T>) -> T {
         let inner = self.inner.borrow();
-        assert_eq!(inner.id, state.runtime_id, "State accessed from wrong Runtime");
+        assert_eq!(
+            inner.id, state.runtime_id,
+            "State accessed from wrong Runtime"
+        );
         inner
             .states
             .get(state.id)
@@ -480,7 +499,10 @@ impl Runtime {
     /// Replaces a state value and notifies subscribed memos, updaters, rebuilds, and effects.
     pub fn set_state<T: 'static>(&self, state: State<T>, value: T) {
         let mut inner = self.inner.borrow_mut();
-        assert_eq!(inner.id, state.runtime_id, "State mutated from wrong Runtime");
+        assert_eq!(
+            inner.id, state.runtime_id,
+            "State mutated from wrong Runtime"
+        );
         if let Some(entry) = inner.states.get_mut(state.id) {
             entry.value = Some(Box::new(value));
             entry.version = entry.version.wrapping_add(1);
@@ -492,7 +514,10 @@ impl Runtime {
     pub fn update_state<T: 'static>(&self, state: State<T>, f: impl FnOnce(&mut T)) {
         let mut boxed = {
             let mut inner = self.inner.borrow_mut();
-            assert_eq!(inner.id, state.runtime_id, "State updated from wrong Runtime");
+            assert_eq!(
+                inner.id, state.runtime_id,
+                "State updated from wrong Runtime"
+            );
             inner
                 .states
                 .get_mut(state.id)
@@ -552,7 +577,10 @@ impl Runtime {
     pub fn get_memo<T: Clone + 'static>(&self, memo: Memo<T>) -> T {
         let needs_recompute = {
             let inner = self.inner.borrow();
-            assert_eq!(inner.id, memo.runtime_id, "Memo accessed from wrong Runtime");
+            assert_eq!(
+                inner.id, memo.runtime_id,
+                "Memo accessed from wrong Runtime"
+            );
             inner
                 .memos
                 .get(memo.id)
@@ -581,7 +609,10 @@ impl Runtime {
     pub fn get_memo_untracked<T: Clone + 'static>(&self, memo: Memo<T>) -> T {
         let needs_recompute = {
             let inner = self.inner.borrow();
-            assert_eq!(inner.id, memo.runtime_id, "Memo accessed from wrong Runtime");
+            assert_eq!(
+                inner.id, memo.runtime_id,
+                "Memo accessed from wrong Runtime"
+            );
             inner
                 .memos
                 .get(memo.id)
@@ -647,11 +678,7 @@ impl Runtime {
     /// Creates a post-layout side [`EffectHandle`] owned optionally by `owner`.
     ///
     /// Rule: Effects run after layout, never during build.
-    pub fn create_effect(
-        &self,
-        f: impl FnMut() + 'static,
-        owner: Option<NodeId>,
-    ) -> EffectHandle {
+    pub fn create_effect(&self, f: impl FnMut() + 'static, owner: Option<NodeId>) -> EffectHandle {
         let mut inner = self.inner.borrow_mut();
         let run: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(f));
         let id = inner.effects.insert(EffectEntry {
@@ -681,13 +708,12 @@ impl Runtime {
     ) -> ReactiveId {
         let compute_erased: Rc<dyn Fn() -> Box<dyn Any>> =
             Rc::new(move || Box::new(compute()) as Box<dyn Any>);
-        let apply_erased: Rc<dyn Fn(&mut Node, Box<dyn Any>) -> DirtyFlags> =
-            Rc::new(move |n, boxed| {
-                let val = *boxed
-                    .downcast::<T>()
-                    .expect("Reactive updater value type mismatch");
-                apply(n, val)
-            });
+        let apply_erased: ReactiveApplyFn = Rc::new(move |n, boxed| {
+            let val = *boxed
+                .downcast::<T>()
+                .expect("Reactive updater value type mismatch");
+            apply(n, val)
+        });
 
         let id = {
             let mut inner = self.inner.borrow_mut();
@@ -846,9 +872,7 @@ impl Runtime {
             inner.spawn_callbacks.insert(
                 id,
                 Box::new(move |boxed| {
-                    let val = *boxed
-                        .downcast::<R>()
-                        .expect("spawn callback type mismatch");
+                    let val = *boxed.downcast::<R>().expect("spawn callback type mismatch");
                     on_complete(val);
                 }),
             );
@@ -901,10 +925,7 @@ impl Runtime {
             };
             let should_run = {
                 let inner = self.inner.borrow();
-                inner
-                    .memos
-                    .get(item.id)
-                    .is_some_and(|m| m.dirty)
+                inner.memos.get(item.id).is_some_and(|m| m.dirty)
             };
             if !should_run {
                 continue;
@@ -1025,16 +1046,16 @@ impl Runtime {
             If {
                 changed: bool,
                 new_branch: bool,
-                builder: Option<Rc<dyn Fn(&mut BuildCx) -> NodeId>>,
+                builder: Option<NodeBuilderFn>,
             },
             Switch {
                 changed: bool,
                 new_case: u64,
-                builder: Rc<dyn Fn(u64, &mut BuildCx) -> NodeId>,
+                builder: SwitchBuilderFn,
             },
             ForEach {
                 keyed_children: Vec<(u64, NodeId)>,
-                rebuilder: Rc<dyn Fn(&mut BuildCx, &mut Vec<(u64, NodeId)>) -> Vec<(u64, NodeId)>>,
+                rebuilder: ForEachRebuilderFn,
             },
         }
 
@@ -1111,7 +1132,8 @@ impl Runtime {
                     let Some(n) = inner.nodes.get_mut(node_id) else {
                         return false;
                     };
-                    if let NodeKind::Dynamic(DynamicNodeData::If { last_branch, .. }) = &mut n.kind {
+                    if let NodeKind::Dynamic(DynamicNodeData::If { last_branch, .. }) = &mut n.kind
+                    {
                         *last_branch = Some(new_branch);
                     }
                     std::mem::take(&mut n.children)
@@ -1127,7 +1149,10 @@ impl Runtime {
                     if let Some(n) = inner.nodes.get_mut(node_id) {
                         n.dirty.remove(DirtyFlags::REBUILD);
                     }
-                    inner.mark_dirty(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
+                    inner.mark_dirty(
+                        node_id,
+                        DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY,
+                    );
                 });
                 true
             }
@@ -1164,7 +1189,10 @@ impl Runtime {
                     if let Some(n) = inner.nodes.get_mut(node_id) {
                         n.dirty.remove(DirtyFlags::REBUILD);
                     }
-                    inner.mark_dirty(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
+                    inner.mark_dirty(
+                        node_id,
+                        DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY,
+                    );
                 });
                 true
             }
@@ -1172,7 +1200,8 @@ impl Runtime {
                 mut keyed_children,
                 rebuilder,
             } => {
-                let new_keyed = self.track_node_rebuild(node_id, || rebuilder(&mut bcx, &mut keyed_children));
+                let new_keyed =
+                    self.track_node_rebuild(node_id, || rebuilder(&mut bcx, &mut keyed_children));
                 let kept_ids: HashSet<NodeId> = new_keyed.iter().map(|(_, id)| *id).collect();
                 for (_, old_id) in keyed_children {
                     if !kept_ids.contains(&old_id) {
@@ -1196,7 +1225,10 @@ impl Runtime {
                             c.parent = Some(node_id);
                         }
                     }
-                    inner.mark_dirty(node_id, DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
+                    inner.mark_dirty(
+                        node_id,
+                        DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY,
+                    );
                 });
                 true
             }
@@ -1433,10 +1465,7 @@ impl<T: 'static> State<T> {
     where
         T: Clone,
     {
-        Binding::new(
-            move || self.get(),
-            move |v| self.set(v),
-        )
+        Binding::new(move || self.get(), move |v| self.set(v))
     }
 
     /// Returns the underlying arena key.

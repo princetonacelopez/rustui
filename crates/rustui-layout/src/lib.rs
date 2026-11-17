@@ -8,8 +8,8 @@ pub use containers::{
     ZStackLayout,
 };
 pub use protocol::{
-    snap_to_pixel, ChildProxy, Children, CustomLayoutBox, DefaultTextMeasurer, Layout,
-    LayoutEngine, TextMeasurer,
+    ChildProxy, Children, CustomLayoutBox, DefaultTextMeasurer, Layout, LayoutEngine, TextMeasurer,
+    snap_to_pixel,
 };
 
 #[cfg(test)]
@@ -53,8 +53,14 @@ mod tests {
         engine.layout(&rt, stack, Size::new(200.0, 200.0), &mut measurer);
 
         rt.with_inner(|inner| {
-            assert_eq!(inner.nodes.get(a).unwrap().bounds(), Rect::new(0.0, 0.0, 100.0, 20.0));
-            assert_eq!(inner.nodes.get(b).unwrap().bounds(), Rect::new(20.0, 30.0, 60.0, 30.0));
+            assert_eq!(
+                inner.nodes.get(a).unwrap().bounds(),
+                Rect::new(0.0, 0.0, 100.0, 20.0)
+            );
+            assert_eq!(
+                inner.nodes.get(b).unwrap().bounds(),
+                Rect::new(20.0, 30.0, 60.0, 30.0)
+            );
         });
     }
 
@@ -75,7 +81,12 @@ mod tests {
         );
         let right = make_box(&rt, 50.0, 20.0, Some(stack));
         rt.with_inner_mut(|inner| {
-            inner.nodes.get_mut(right).unwrap().layout_props.layout_priority = 1.0;
+            inner
+                .nodes
+                .get_mut(right)
+                .unwrap()
+                .layout_props
+                .layout_priority = 1.0;
         });
         rt.attach_child(stack, left);
         rt.attach_child(stack, spacer);
@@ -160,7 +171,10 @@ mod tests {
             NodeKind::Container(ContainerKind::Grid {
                 columns: vec![
                     GridTrack::Fixed(50.0),
-                    GridTrack::Flexible { min: 20.0, max: 200.0 },
+                    GridTrack::Flexible {
+                        min: 20.0,
+                        max: 200.0,
+                    },
                 ],
                 h_spacing: 10.0,
                 v_spacing: 8.0,
@@ -176,9 +190,18 @@ mod tests {
         engine.layout(&rt, grid, Size::new(200.0, 200.0), &mut measurer);
 
         rt.with_inner(|inner| {
-            assert_eq!(inner.nodes.get(c0).unwrap().bounds(), Rect::new(0.0, 0.0, 50.0, 20.0));
-            assert_eq!(inner.nodes.get(c1).unwrap().bounds(), Rect::new(60.0, 0.0, 80.0, 30.0));
-            assert_eq!(inner.nodes.get(c2).unwrap().bounds(), Rect::new(0.0, 38.0, 50.0, 25.0));
+            assert_eq!(
+                inner.nodes.get(c0).unwrap().bounds(),
+                Rect::new(0.0, 0.0, 50.0, 20.0)
+            );
+            assert_eq!(
+                inner.nodes.get(c1).unwrap().bounds(),
+                Rect::new(60.0, 0.0, 80.0, 30.0)
+            );
+            assert_eq!(
+                inner.nodes.get(c2).unwrap().bounds(),
+                Rect::new(0.0, 38.0, 50.0, 25.0)
+            );
         });
     }
 
@@ -241,8 +264,14 @@ mod tests {
         engine.layout(&rt, container, Size::new(200.0, 200.0), &mut measurer);
 
         rt.with_inner(|inner| {
-            assert_eq!(inner.nodes.get(a).unwrap().bounds(), Rect::new(0.0, 0.0, 20.0, 20.0));
-            assert_eq!(inner.nodes.get(b).unwrap().bounds(), Rect::new(35.0, 20.0, 30.0, 30.0));
+            assert_eq!(
+                inner.nodes.get(a).unwrap().bounds(),
+                Rect::new(0.0, 0.0, 20.0, 20.0)
+            );
+            assert_eq!(
+                inner.nodes.get(b).unwrap().bounds(),
+                Rect::new(35.0, 20.0, 30.0, 30.0)
+            );
         });
     }
 
@@ -287,7 +316,14 @@ mod tests {
                 t.text = "Hello World!".into();
             }
             inner.mark_dirty(text, DirtyFlags::LAYOUT | DirtyFlags::PAINT);
-            assert!(!inner.nodes.get(sibling).unwrap().dirty.intersects(DirtyFlags::LAYOUT));
+            assert!(
+                !inner
+                    .nodes
+                    .get(sibling)
+                    .unwrap()
+                    .dirty
+                    .intersects(DirtyFlags::LAYOUT)
+            );
         });
     }
 

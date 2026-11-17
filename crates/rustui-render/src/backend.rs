@@ -213,10 +213,7 @@ pub fn probe_gpu_adapter() -> GpuDiagnostics {
     })) {
         Ok(adapter) => {
             let info = adapter.get_info();
-            let vello_supported = adapter
-                .limits()
-                .max_compute_workgroups_per_dimension
-                > 0;
+            let vello_supported = adapter.limits().max_compute_workgroups_per_dimension > 0;
             GpuDiagnostics {
                 adapter_available: true,
                 adapter_name: info.name,
@@ -297,26 +294,28 @@ impl WgpuRenderer {
         if self.gpu.is_some() {
             return true;
         }
-        let Ok(adapter) = pollster::block_on(self.instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let Ok(adapter) =
+            pollster::block_on(self.instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface,
                 force_fallback_adapter: false,
                 ..Default::default()
-            },
-        )) else {
+            }))
+        else {
             tracing::debug!("wgpu adapter unavailable; using software fallback");
             return false;
         };
 
-        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("rustui-device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: adapter.limits(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        })) else {
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("rustui-device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            }))
+        else {
             return false;
         };
 
@@ -367,7 +366,10 @@ impl WgpuRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rustui-pipeline-layout"),
-            bind_group_layouts: &[Some(&uniform_bind_group_layout), Some(&tex_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&uniform_bind_group_layout),
+                Some(&tex_bind_group_layout),
+            ],
             immediate_size: 0,
         });
 
@@ -483,6 +485,7 @@ impl WgpuRenderer {
     }
 
     /// Renders `list` to a live window surface texture view.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_to_texture_view(
         &mut self,
         view: &wgpu::TextureView,
@@ -528,11 +531,12 @@ impl WgpuRenderer {
         let w = width.max(1);
         let h = height.max(1);
         let force_sw = std::env::var("RUSTUI_SOFTWARE_RENDER").is_ok_and(|v| v == "1");
-        if !force_sw && self.ensure_gpu(None) {
-            if let Some(bytes) = self.render_offscreen_gpu(list, atlas, resources, w, h, clear_color)
-            {
-                return bytes;
-            }
+        if !force_sw
+            && self.ensure_gpu(None)
+            && let Some(bytes) =
+                self.render_offscreen_gpu(list, atlas, resources, w, h, clear_color)
+        {
+            return bytes;
         }
         SoftwareRasterizer::render(list, atlas, resources, w, h, clear_color)
     }
@@ -636,6 +640,7 @@ fn align_to(val: u32, align: u32) -> u32 {
     val.div_ceil(align) * align
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_rgba_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -710,6 +715,7 @@ struct DrawBatch {
     count: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_with_gpu(
     gpu: &mut GpuContext,
     target_view: &wgpu::TextureView,
@@ -815,20 +821,16 @@ fn render_with_gpu(
 
     for cmd in &list.commands {
         let current_opacity = *opacity_stack.last().unwrap_or(&1.0);
-        let cur_clip = *clip_stack
-            .last()
-            .unwrap_or(&Rect::new(0.0, 0.0, width as f32, height as f32));
+        let cur_clip =
+            *clip_stack
+                .last()
+                .unwrap_or(&Rect::new(0.0, 0.0, width as f32, height as f32));
         let scissor = rect_to_scissor(cur_clip, width, height);
 
         match cmd {
             DisplayCommand::PushClipRect(r)
             | DisplayCommand::PushClipRoundedRect { rect: r, .. } => {
-                let scaled = Rect::new(
-                    r.x * scale,
-                    r.y * scale,
-                    r.width * scale,
-                    r.height * scale,
-                );
+                let scaled = Rect::new(r.x * scale, r.y * scale, r.width * scale, r.height * scale);
                 let next = cur_clip.intersection(&scaled).unwrap_or(Rect::ZERO);
                 clip_stack.push(next);
             }
@@ -1110,9 +1112,12 @@ fn render_with_gpu(
                         );
                         gpu.image_textures.insert(*image_id, pair);
                     }
-                    for (patch_rect, patch_uv) in
-                        compute_nine_slice_patches(*rect, img.width as f32, img.height as f32, *slice)
-                    {
+                    for (patch_rect, patch_uv) in compute_nine_slice_patches(
+                        *rect,
+                        img.width as f32,
+                        img.height as f32,
+                        *slice,
+                    ) {
                         push_inst(
                             &mut instances,
                             &mut batches,
@@ -1128,12 +1133,7 @@ fn render_with_gpu(
                                 radii: [0.0; 4],
                                 color: [tint.r, tint.g, tint.b, tint.a],
                                 color2: [0.0; 4],
-                                uv_rect: [
-                                    patch_uv.x,
-                                    patch_uv.y,
-                                    patch_uv.width,
-                                    patch_uv.height,
-                                ],
+                                uv_rect: [patch_uv.x, patch_uv.y, patch_uv.width, patch_uv.height],
                                 params: [6.0, 0.0, 0.0, 0.0],
                                 params2: [0.0, 0.0, current_opacity, 0.0],
                             },
@@ -1146,7 +1146,13 @@ fn render_with_gpu(
                 let path = path_ops_to_bezpath(ops, scale);
                 if let Some(fc) = fill {
                     let c = VColor::new([fc.r, fc.g, fc.b, fc.a * current_opacity]);
-                    vello_scene.fill(Fill::NonZero, Affine::IDENTITY, &Brush::Solid(c), None, &path);
+                    vello_scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        &Brush::Solid(c),
+                        None,
+                        &path,
+                    );
                 }
                 if let Some((sw, sc)) = stroke {
                     let c = VColor::new([sc.r, sc.g, sc.b, sc.a * current_opacity]);
@@ -1186,9 +1192,7 @@ fn render_with_gpu(
     }
 
     // If Vello paths exist and Vello GPU renderer is ready, rasterize them into a cached texture and blit first.
-    if has_vello_paths
-        && let Some(vello) = &mut gpu.vello_renderer
-    {
+    if has_vello_paths && let Some(vello) = &mut gpu.vello_renderer {
         let vello_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rustui-vello-path-tex"),
             size: wgpu::Extent3d {
@@ -1236,7 +1240,8 @@ fn render_with_gpu(
                 ],
             });
             let composite_id = u64::MAX - 1;
-            gpu.image_textures.insert(composite_id, (vello_tex, vello_bg));
+            gpu.image_textures
+                .insert(composite_id, (vello_tex, vello_bg));
             let idx = instances.len() as u32;
             instances.push(SdfInstance {
                 rect: [0.0, 0.0, width as f32, height as f32],
@@ -1392,8 +1397,18 @@ fn compute_nine_slice_patches(
     for row in 0..3 {
         for col in 0..3 {
             out[k] = (
-                Rect::new(xs[col], ys[row], xs[col + 1] - xs[col], ys[row + 1] - ys[row]),
-                Rect::new(us[col], vs[row], us[col + 1] - us[col], vs[row + 1] - vs[row]),
+                Rect::new(
+                    xs[col],
+                    ys[row],
+                    xs[col + 1] - xs[col],
+                    ys[row + 1] - ys[row],
+                ),
+                Rect::new(
+                    us[col],
+                    vs[row],
+                    us[col + 1] - us[col],
+                    vs[row + 1] - vs[row],
+                ),
             );
             k += 1;
         }
@@ -1419,7 +1434,7 @@ impl SoftwareRasterizer {
         let scale = list.scale_factor.max(1.0);
         let clear = clear_color.to_rgba8();
         let mut buf = vec![0u8; (w * h * 4) as usize];
-        for px in buf.chunks_exact_mut(4) {
+        for px in buf.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&clear);
         }
 
@@ -1533,7 +1548,10 @@ impl SoftwareRasterizer {
                 } => {
                     if let Some(img) = resources.get(*image_id) {
                         let sr = scale_rect(*rect, scale);
-                        blit_image(&mut buf, w, h, clip, sr, *uv, img.width, img.height, &img.rgba, *tint, opacity);
+                        blit_image(
+                            &mut buf, w, h, clip, sr, *uv, img.width, img.height, &img.rgba, *tint,
+                            opacity,
+                        );
                     }
                 }
                 DisplayCommand::DrawNineSlice {
@@ -1550,7 +1568,10 @@ impl SoftwareRasterizer {
                             *slice,
                         ) {
                             let sr = scale_rect(pr, scale);
-                            blit_image(&mut buf, w, h, clip, sr, puv, img.width, img.height, &img.rgba, *tint, opacity);
+                            blit_image(
+                                &mut buf, w, h, clip, sr, puv, img.width, img.height, &img.rgba,
+                                *tint, opacity,
+                            );
                         }
                     }
                 }
@@ -1596,7 +1617,13 @@ impl SoftwareRasterizer {
                                     let a = f32::from(atlas_px[src_i + 3]) / 255.0;
                                     Color::rgba(gc.r, gc.g, gc.b, gc.a * a)
                                 };
-                                blend_pixel(&mut buf, w, px as u32, py as u32, Color::rgba(src.r, src.g, src.b, src.a * opacity));
+                                blend_pixel(
+                                    &mut buf,
+                                    w,
+                                    px as u32,
+                                    py as u32,
+                                    Color::rgba(src.r, src.g, src.b, src.a * opacity),
+                                );
                             }
                         }
                     }
@@ -1604,10 +1631,25 @@ impl SoftwareRasterizer {
                 DisplayCommand::DrawPath { ops, fill, stroke } => {
                     let pts = flatten_path(ops, scale);
                     if let Some(fc) = fill {
-                        fill_polygon(&mut buf, w, h, clip, &pts, Color::rgba(fc.r, fc.g, fc.b, fc.a * opacity));
+                        fill_polygon(
+                            &mut buf,
+                            w,
+                            h,
+                            clip,
+                            &pts,
+                            Color::rgba(fc.r, fc.g, fc.b, fc.a * opacity),
+                        );
                     }
                     if let Some((sw, sc)) = stroke {
-                        stroke_polyline(&mut buf, w, h, clip, &pts, (*sw * scale).max(1.0), Color::rgba(sc.r, sc.g, sc.b, sc.a * opacity));
+                        stroke_polyline(
+                            &mut buf,
+                            w,
+                            h,
+                            clip,
+                            &pts,
+                            (*sw * scale).max(1.0),
+                            Color::rgba(sc.r, sc.g, sc.b, sc.a * opacity),
+                        );
                     }
                 }
                 DisplayCommand::DrawCustomShader { rect, .. } => {
@@ -1670,6 +1712,7 @@ fn raster_sdf_rect(
     raster_sdf_rect_in_bounds(buf, w, h, clip, rect, rect, radii, eval);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn raster_sdf_rect_in_bounds(
     buf: &mut [u8],
     w: u32,
@@ -1680,7 +1723,9 @@ fn raster_sdf_rect_in_bounds(
     radii: CornerRadii,
     eval: impl Fn(f32) -> Color,
 ) {
-    raster_sdf_rect_xy_bounds(buf, w, h, clip, iter_rect, sdf_rect, radii, |_, _, d| eval(d));
+    raster_sdf_rect_xy_bounds(buf, w, h, clip, iter_rect, sdf_rect, radii, |_, _, d| {
+        eval(d)
+    });
 }
 
 fn raster_sdf_rect_xy(
@@ -1695,6 +1740,7 @@ fn raster_sdf_rect_xy(
     raster_sdf_rect_xy_bounds(buf, w, h, clip, rect, rect, radii, eval);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn raster_sdf_rect_xy_bounds(
     buf: &mut [u8],
     w: u32,
@@ -1767,6 +1813,7 @@ fn eval_gradient(gradient: &GradientKind, x: f32, y: f32) -> Color {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn blit_image(
     buf: &mut [u8],
     w: u32,
@@ -1872,8 +1919,18 @@ fn fill_polygon(buf: &mut [u8], w: u32, h: u32, clip: Rect, pts: &[Point], color
     if pts.len() < 3 || color.a <= 0.0 {
         return;
     }
-    let min_y = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min).max(clip.y).max(0.0);
-    let max_y = pts.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max).min(clip.max_y()).min(h as f32);
+    let min_y = pts
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::INFINITY, f32::min)
+        .max(clip.y)
+        .max(0.0);
+    let max_y = pts
+        .iter()
+        .map(|p| p.y)
+        .fold(f32::NEG_INFINITY, f32::max)
+        .min(clip.max_y())
+        .min(h as f32);
     let min_x = clip.x.max(0.0) as u32;
     let max_x = clip.max_x().min(w as f32) as u32;
 
@@ -1889,7 +1946,7 @@ fn fill_polygon(buf: &mut [u8], w: u32, h: u32, clip: Rect, pts: &[Point], color
             }
         }
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        for pair in xs.chunks_exact(2) {
+        for pair in xs.as_chunks::<2>().0 {
             let sx0 = (pair[0].floor() as i32).max(min_x as i32) as u32;
             let sx1 = (pair[1].ceil() as i32).min(max_x as i32).max(0) as u32;
             for x in sx0..sx1 {
@@ -1917,8 +1974,12 @@ fn stroke_polyline(
         let b = seg[1];
         let x0 = (a.x.min(b.x) - radius - 1.0).max(clip.x).max(0.0) as u32;
         let y0 = (a.y.min(b.y) - radius - 1.0).max(clip.y).max(0.0) as u32;
-        let x1 = ((a.x.max(b.x) + radius + 1.0).min(clip.max_x()).min(w as f32)) as u32;
-        let y1 = ((a.y.max(b.y) + radius + 1.0).min(clip.max_y()).min(h as f32)) as u32;
+        let x1 = ((a.x.max(b.x) + radius + 1.0)
+            .min(clip.max_x())
+            .min(w as f32)) as u32;
+        let y1 = ((a.y.max(b.y) + radius + 1.0)
+            .min(clip.max_y())
+            .min(h as f32)) as u32;
         let dx = b.x - a.x;
         let dy = b.y - a.y;
         let len_sq = (dx * dx + dy * dy).max(0.0001);

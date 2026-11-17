@@ -41,7 +41,7 @@ clap = { version = "4.6", features = ["derive"] }
 fontique = { version = "0.13", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 kurbo = "0.13"
-parley = { version = "0.13", default-features = false, features = ["std", "system"] }
+parley = { version = "0.13", default-features = false, features = ["std", "system", "complex-scripts"] }
 peniko = "0.6"
 pollster = "0.4"
 resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }

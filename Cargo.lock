@@ -2786,7 +2786,6 @@ name = "rustui"
 version = "0.1.0"
 dependencies = [
  "clap",
- "fontique",
  "image",
  "rustui-core",
  "rustui-layout",
@@ -2796,7 +2795,6 @@ dependencies = [
  "rustui-widgets",
  "tracing",
  "tracing-subscriber",
- "wgpu",
 ]
 
 [[package]]

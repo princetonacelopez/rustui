@@ -446,7 +446,9 @@ impl Primitive for Toggle {
         );
         cx.runtime.attach_child(switch_node, knob);
 
-        let lbl = Text::new(self.label).color(style.label_color).build_node(cx);
+        let lbl = Text::new(self.label)
+            .color(style.label_color)
+            .build_node(cx);
         cx.runtime.attach_child(row, switch_node);
         cx.runtime.attach_child(row, lbl);
         row
@@ -762,9 +764,11 @@ impl<L: Layout, C: ViewSequence> View for CustomLayoutView<L, C> {
     }
 }
 
+type CanvasDisplayPainter = Rc<dyn Fn(Rect, &mut DisplayList)>;
+
 /// Custom display-list drawing canvas view (`Canvas::new(move |rect, dl| ...)`).
 pub struct Canvas {
-    painter: Rc<dyn Fn(Rect, &mut DisplayList)>,
+    painter: CanvasDisplayPainter,
 }
 
 impl std::fmt::Debug for Canvas {

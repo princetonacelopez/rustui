@@ -74,8 +74,7 @@ fn solve_stack(
             for i in 0..n {
                 let mut child = children.child(i);
                 let min_s = axis.main(child.size(axis.make_size(Some(0.0), cross_prop)));
-                let max_s =
-                    axis.main(child.size(axis.make_size(Some(f32::INFINITY), cross_prop)));
+                let max_s = axis.main(child.size(axis.make_size(Some(f32::INFINITY), cross_prop)));
                 let flex = (max_s - min_s).max(0.0);
                 let prio = child.priority();
                 entries.push((i, prio, flex, min_s));
@@ -495,9 +494,10 @@ impl LazyVStackLayout {
         }
         let pitch = (self.estimated_row_height + self.spacing).max(1.0);
         let first_visible = (self.scroll_offset / pitch).floor().max(0.0) as usize;
-        let last_visible =
-            (((self.scroll_offset + viewport_height.max(1.0)) / pitch).ceil().max(0.0) as usize)
-                .min(self.item_count);
+        let last_visible = (((self.scroll_offset + viewport_height.max(1.0)) / pitch)
+            .ceil()
+            .max(0.0) as usize)
+            .min(self.item_count);
         let start = first_visible.saturating_sub(self.overscan);
         let end = (last_visible + self.overscan).min(self.item_count);
         (start, end)

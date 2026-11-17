@@ -132,11 +132,15 @@ impl ResourceLoader {
         let height = size.height().max(1);
         let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
             .ok_or_else(|| "failed to allocate SVG pixmap".to_owned())?;
-        resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixmap.as_mut(),
+        );
 
         // Convert premultiplied RGBA to unpremultiplied RGBA8 for consistent blending.
         let mut rgba = pixmap.take();
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             let a = px[3];
             if a > 0 && a < 255 {
                 let af = f32::from(a) / 255.0;

@@ -261,7 +261,7 @@ impl EditableText for TextBuffer {
     }
 
     fn set_text(&mut self, text: &str) {
-        if self.rope.to_string() == text {
+        if self.rope == text {
             return;
         }
         self.rope = Rope::from_str(text);

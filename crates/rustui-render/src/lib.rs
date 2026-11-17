@@ -10,15 +10,15 @@ pub mod resources;
 
 pub use atlas::{AtlasGlyphEntry, GlyphAtlas};
 pub use backend::{
-    encode_rgba_to_png, platform_backends, probe_gpu_adapter, GpuDiagnostics, SoftwareRasterizer,
-    WgpuRenderer,
+    GpuDiagnostics, SoftwareRasterizer, WgpuRenderer, encode_rgba_to_png, platform_backends,
+    probe_gpu_adapter,
 };
 pub use damage::DamageTracker;
 pub use display_list::{
     BatchKey, BlendMode, DisplayCommand, DisplayList, FontBlob, GlyphKey, GlyphRunItem,
     GradientKind, GradientStop, ImageId, PathOp, SubpixelBin,
 };
-pub use emitter::{emit_display_list, TextPainter};
+pub use emitter::{TextPainter, emit_display_list};
 pub use inspector::InspectorOverlay;
 pub use resources::{AsyncImageState, DecodedImage, ResourceLoader};
 
@@ -161,10 +161,7 @@ mod tests {
     #[test]
     fn damage_tracker_tracks_changed_node_regions() {
         let rt = rustui_core::Runtime::new();
-        let n1 = rt.alloc_node(
-            rustui_core::NodeKind::Modifier,
-            None,
-        );
+        let n1 = rt.alloc_node(rustui_core::NodeKind::Modifier, None);
         rt.with_inner_mut(|inner| {
             inner.nodes.get_mut(n1).unwrap().layout_cache.bounds =
                 Rect::new(20.0, 20.0, 60.0, 30.0);

@@ -15,9 +15,7 @@ use rustui_core::{
     TruncationMode,
 };
 use rustui_layout::TextMeasurer;
-use rustui_render::{
-    DisplayList, FontBlob, GlyphKey, GlyphRunItem, SubpixelBin, TextPainter,
-};
+use rustui_render::{DisplayList, FontBlob, GlyphKey, GlyphRunItem, SubpixelBin, TextPainter};
 use unicode_bidi::BidiInfo;
 
 /// Per-line metrics exposed to layout and editors.
@@ -360,10 +358,7 @@ impl TextSystem {
         let bidi = BidiInfo::new(&display_text, None);
         let has_rtl = bidi.has_rtl();
 
-        let default_rgba = data
-            .color
-            .unwrap_or(Color::BLACK)
-            .to_rgba8();
+        let default_rgba = data.color.unwrap_or(Color::BLACK).to_rgba8();
 
         let scale = scale_factor.max(1.0);
         let mut builder =
@@ -589,7 +584,12 @@ impl TextPainter for ParleyTextPainter<'_> {
             let x0 = r0.x.min(r1.x);
             let x1 = r0.x.max(r1.x);
             list.fill_rect(
-                Rect::new(bounds.x + x0, bounds.y + r0.y, (x1 - x0).max(2.0), r0.height),
+                Rect::new(
+                    bounds.x + x0,
+                    bounds.y + r0.y,
+                    (x1 - x0).max(2.0),
+                    r0.height,
+                ),
                 Color::rgba(0.18, 0.50, 0.96, 0.28),
             );
         }

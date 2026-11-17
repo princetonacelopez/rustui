@@ -9,13 +9,13 @@ use rustui_core::{
 };
 use rustui_layout::LayoutEngine;
 use rustui_render::{
-    emit_display_list, encode_rgba_to_png, DamageTracker, DisplayList, GlyphAtlas,
-    InspectorOverlay, ResourceLoader, WgpuRenderer,
+    DamageTracker, DisplayList, GlyphAtlas, InspectorOverlay, ResourceLoader, WgpuRenderer,
+    emit_display_list, encode_rgba_to_png,
 };
 use rustui_text::{ParleyTextMeasurer, ParleyTextPainter, TextSystem};
 
 use crate::accessibility::AccessKitBridge;
-use crate::input::{key_down, FocusManager, GestureRecognizer};
+use crate::input::{FocusManager, GestureRecognizer, key_down};
 
 /// Summary returned after executing one headless frame tick.
 #[derive(Debug, Clone, Copy)]
@@ -165,7 +165,9 @@ impl HeadlessSimulator {
             inner.scheduler.metrics.total_frame_time = frame_start.elapsed();
         });
 
-        let paint_commands = self.runtime.with_inner(|inner| inner.scheduler.metrics.paint_commands);
+        let paint_commands = self
+            .runtime
+            .with_inner(|inner| inner.scheduler.metrics.paint_commands);
         FrameSummary {
             reactive_updates,
             rebuilt_nodes,

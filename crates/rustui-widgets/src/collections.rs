@@ -72,6 +72,9 @@ impl<V: View> View for ScrollView<V> {
     }
 }
 
+type PoolUpdaterFn = Rc<dyn Fn(usize, &mut rustui_core::Node)>;
+type ListRowBuilderFn<Item> = Rc<dyn Fn(usize, &Item, bool) -> AnyView>;
+
 /// Virtualized vertical stack (`LazyVStack`) capable of 1,000,000+ rows at 60 fps.
 ///
 /// Only a small visible pool of row nodes is constructed and recycled in-place during scrolling.
@@ -82,7 +85,7 @@ pub struct LazyVStack {
     overscan: usize,
     pool_size: usize,
     row_builder: Rc<dyn Fn(usize) -> AnyView>,
-    pool_updater: Option<Rc<dyn Fn(usize, &mut rustui_core::Node)>>,
+    pool_updater: Option<PoolUpdaterFn>,
 }
 
 impl std::fmt::Debug for LazyVStack {
@@ -227,7 +230,7 @@ pub fn format_virtual_row_text(node: &mut rustui_core::Node, prefix: &str, row_i
 pub struct List<Item: Clone + 'static> {
     items: Vec<Item>,
     selected: Binding<Option<usize>>,
-    row_builder: Rc<dyn Fn(usize, &Item, bool) -> AnyView>,
+    row_builder: ListRowBuilderFn<Item>,
 }
 
 impl<Item: Clone + 'static> std::fmt::Debug for List<Item> {
@@ -271,7 +274,9 @@ impl<Item: Clone + 'static> Primitive for List<Item> {
             let bg = if is_sel {
                 style.selected_background
             } else if idx % 2 == 1 {
-                style.alternate_row_background.unwrap_or(style.row_background)
+                style
+                    .alternate_row_background
+                    .unwrap_or(style.row_background)
             } else {
                 style.row_background
             };
@@ -384,24 +389,20 @@ impl Primitive for Table {
                     GridTrack::Fixed(w) => w,
                     GridTrack::Flexible { min, .. } => min.max(100.0),
                 };
-                AnyView::new(
-                    rustui_core::ViewExt::accessibility_role(
-                        rustui_core::ViewExt::frame(
-                            rustui_core::ViewExt::padding(
-                                Text::new(c.title.clone()).font(Font::headline()),
-                                Edges::symmetric(6.0, 10.0),
-                            ),
-                            Frame::new().width(w),
+                AnyView::new(rustui_core::ViewExt::accessibility_role(
+                    rustui_core::ViewExt::frame(
+                        rustui_core::ViewExt::padding(
+                            Text::new(c.title.clone()).font(Font::headline()),
+                            Edges::symmetric(6.0, 10.0),
                         ),
-                        AccessibilityRole::TableColumnHeader,
+                        Frame::new().width(w),
                     ),
-                )
+                    AccessibilityRole::TableColumnHeader,
+                ))
             })
             .collect();
-        let header = rustui_core::ViewExt::background(
-            HStack::new(0, header_cells),
-            theme.colors.surface,
-        );
+        let header =
+            rustui_core::ViewExt::background(HStack::new(0, header_cells), theme.colors.surface);
         cx.build_child(root, header);
         cx.build_child(root, Divider::new());
 
@@ -419,18 +420,16 @@ impl Primitive for Table {
                         GridTrack::Flexible { min, .. } => min.max(100.0),
                     };
                     let txt = (cell_fn)(row_idx, col_idx);
-                    AnyView::new(
-                        rustui_core::ViewExt::accessibility_role(
-                            rustui_core::ViewExt::frame(
-                                rustui_core::ViewExt::padding(
-                                    Text::new(txt),
-                                    Edges::symmetric(4.0, 10.0),
-                                ),
-                                Frame::new().width(w),
+                    AnyView::new(rustui_core::ViewExt::accessibility_role(
+                        rustui_core::ViewExt::frame(
+                            rustui_core::ViewExt::padding(
+                                Text::new(txt),
+                                Edges::symmetric(4.0, 10.0),
                             ),
-                            AccessibilityRole::TableCell,
+                            Frame::new().width(w),
                         ),
-                    )
+                        AccessibilityRole::TableCell,
+                    ))
                 })
                 .collect();
             let sel_click = sel_b.clone();
@@ -551,11 +550,7 @@ impl View for Tree {
     }
 }
 
-fn flatten_tree_items<'a>(
-    items: &'a [TreeItemData],
-    depth: usize,
-    out: &mut Vec<(usize, TreeItemData)>,
-) {
+fn flatten_tree_items(items: &[TreeItemData], depth: usize, out: &mut Vec<(usize, TreeItemData)>) {
     for item in items {
         out.push((depth, item.clone()));
         if item.expanded {

@@ -59,7 +59,10 @@ pub struct DesktopPlatform {
 impl std::fmt::Debug for DesktopPlatform {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DesktopPlatform")
-            .field("has_os_clipboard", &self.clipboard.lock().ok().is_some_and(|g| g.is_some()))
+            .field(
+                "has_os_clipboard",
+                &self.clipboard.lock().ok().is_some_and(|g| g.is_some()),
+            )
             .finish()
     }
 }

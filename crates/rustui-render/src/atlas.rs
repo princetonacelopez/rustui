@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 
 use rustui_core::Rect;
+use swash::FontRef;
 use swash::scale::image::Content as GlyphContent;
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
 use swash::zeno::{Format, Vector};
-use swash::FontRef;
 
 use crate::display_list::{FontBlob, GlyphKey};
 
@@ -213,6 +213,7 @@ impl GlyphAtlas {
     }
 
     /// Inserts a pre-rasterized RGBA glyph bitmap directly (useful in tests and custom glyph sources).
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_raw(
         &mut self,
         key: GlyphKey,

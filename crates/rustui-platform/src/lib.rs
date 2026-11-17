@@ -6,14 +6,16 @@ pub mod services;
 pub mod simulator;
 pub mod window;
 
-pub use accessibility::{from_ak_id, to_ak_id, AccessKitBridge, WINDOW_AK_ROOT_ID};
-pub use input::{key_down, FocusManager, GestureRecognizer, HitTester};
+pub use accessibility::{AccessKitBridge, WINDOW_AK_ROOT_ID, from_ak_id, to_ak_id};
+pub use input::{FocusManager, GestureRecognizer, HitTester, key_down};
 pub use services::{
-    detect_platform_capabilities, DesktopPlatform, FileDialogOptions, MenuItemSpec, MenuSpec,
-    NotificationSpec, Platform, PlatformCapabilities,
+    DesktopPlatform, FileDialogOptions, MenuItemSpec, MenuSpec, NotificationSpec, Platform,
+    PlatformCapabilities, detect_platform_capabilities,
 };
 pub use simulator::{FrameSummary, HeadlessSimulator};
-pub use window::{run_desktop_windows, AppEvent, SystemTheme, WindowManager, WindowOptions, WindowSpec};
+pub use window::{
+    AppEvent, SystemTheme, WindowManager, WindowOptions, WindowSpec, run_desktop_windows,
+};
 
 #[cfg(test)]
 mod tests {
@@ -202,7 +204,10 @@ mod tests {
 
         let platform = DesktopPlatform::headless();
         platform.clipboard_set("RustUI Clipboard");
-        assert_eq!(platform.clipboard_get().as_deref(), Some("RustUI Clipboard"));
+        assert_eq!(
+            platform.clipboard_get().as_deref(),
+            Some("RustUI Clipboard")
+        );
     }
 
     #[test]
@@ -219,7 +224,8 @@ mod tests {
                 }));
                 let cb = self.0;
                 cx.runtime.with_inner_mut(|inner| {
-                    inner.nodes.get_mut(id).unwrap().events.on_tap = Some(Rc::new(move || cb.set(true)));
+                    inner.nodes.get_mut(id).unwrap().events.on_tap =
+                        Some(Rc::new(move || cb.set(true)));
                 });
                 id
             }

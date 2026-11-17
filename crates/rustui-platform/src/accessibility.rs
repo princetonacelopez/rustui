@@ -5,9 +5,7 @@ use accesskit::{
     Action, ActionData, ActionRequest, Node as AkNode, NodeId as AkNodeId, Rect as AkRect, Role,
     TreeId, TreeInfo, TreeUpdate,
 };
-use rustui_core::{
-    AccessibilityRole, NodeId, NodeKind, Runtime, RuntimeInner,
-};
+use rustui_core::{AccessibilityRole, NodeId, NodeKind, Runtime, RuntimeInner};
 use slotmap::{Key, KeyData};
 
 use crate::input::FocusManager;
@@ -98,7 +96,10 @@ impl AccessKitBridge {
             }
             Action::Click => {
                 let cb = runtime.with_inner(|inner| {
-                    inner.nodes.get(node_id).and_then(|n| n.events.on_tap.clone())
+                    inner
+                        .nodes
+                        .get(node_id)
+                        .and_then(|n| n.events.on_tap.clone())
                 });
                 if let Some(f) = cb {
                     runtime.enter(|| f());
@@ -157,11 +158,7 @@ impl AccessKitBridge {
     }
 }
 
-fn collect_ak_nodes(
-    inner: &RuntimeInner,
-    node_id: NodeId,
-    out: &mut Vec<(AkNodeId, AkNode)>,
-) {
+fn collect_ak_nodes(inner: &RuntimeInner, node_id: NodeId, out: &mut Vec<(AkNodeId, AkNode)>) {
     let Some(node) = inner.nodes.get(node_id) else {
         return;
     };

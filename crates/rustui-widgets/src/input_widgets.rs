@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use rustui_core::{
     AccessibilityRole, Binding, BuildCx, Color, ContainerKind, ControlNodeData, CornerRadii, Cx,
-    DirtyFlags, Edges, EmptyView, Frame, KeyCode, NodeId, NodeKind, PointerPhase,
-    Primitive, Rect, TextNodeData, VerticalAlignment, View,
+    DirtyFlags, Edges, EmptyView, Frame, KeyCode, NodeId, NodeKind, PointerPhase, Primitive, Rect,
+    TextNodeData, VerticalAlignment, View,
 };
 use rustui_platform::{DesktopPlatform, Platform};
 use rustui_text::{EditableText, ImeState, TextBuffer};
@@ -203,38 +203,40 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
                             return true;
                         }
                     }
-                    KeyCode::Character(ch) if ctrl_or_meta => match ch.to_ascii_lowercase().as_str() {
-                        "a" => buf.select_all(),
-                        "c" => {
-                            let sel = buf.selected_text();
-                            if !sel.is_empty() {
-                                key_clip.clipboard_set(&sel);
+                    KeyCode::Character(ch) if ctrl_or_meta => {
+                        match ch.to_ascii_lowercase().as_str() {
+                            "a" => buf.select_all(),
+                            "c" => {
+                                let sel = buf.selected_text();
+                                if !sel.is_empty() {
+                                    key_clip.clipboard_set(&sel);
+                                }
                             }
-                        }
-                        "x" => {
-                            let sel = buf.selected_text();
-                            if !sel.is_empty() {
-                                key_clip.clipboard_set(&sel);
-                                buf.delete_backward();
+                            "x" => {
+                                let sel = buf.selected_text();
+                                if !sel.is_empty() {
+                                    key_clip.clipboard_set(&sel);
+                                    buf.delete_backward();
+                                }
                             }
-                        }
-                        "v" => {
-                            if let Some(clip) = key_clip.clipboard_get() {
-                                buf.insert(&clip);
+                            "v" => {
+                                if let Some(clip) = key_clip.clipboard_get() {
+                                    buf.insert(&clip);
+                                }
                             }
-                        }
-                        "z" => {
-                            if ev.modifiers.shift {
+                            "z" => {
+                                if ev.modifiers.shift {
+                                    buf.redo();
+                                } else {
+                                    buf.undo();
+                                }
+                            }
+                            "y" => {
                                 buf.redo();
-                            } else {
-                                buf.undo();
                             }
+                            _ => handled = false,
                         }
-                        "y" => {
-                            buf.redo();
-                        }
-                        _ => handled = false,
-                    },
+                    }
                     KeyCode::Space => buf.insert(" "),
                     KeyCode::Character(ch) => {
                         let s = ev.text.as_deref().unwrap_or(ch.as_str());
@@ -253,7 +255,9 @@ fn build_editable_text_node(cfg: EditableConfig, cx: &mut BuildCx) -> NodeId {
                 let caret_rect = preedit_rt
                     .with_inner(|inner| inner.nodes.get(node).map(|x| x.bounds()))
                     .unwrap_or(Rect::ZERO);
-                preedit_ime.borrow_mut().set_preedit(text, cursor, caret_rect);
+                preedit_ime
+                    .borrow_mut()
+                    .set_preedit(text, cursor, caret_rect);
                 preedit_sync();
             }));
 
@@ -482,7 +486,10 @@ impl Slider {
 impl Primitive for Slider {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let theme = resolve_theme(cx);
-        let initial = cx.runtime.enter(|| self.value.get()).clamp(self.min, self.max);
+        let initial = cx
+            .runtime
+            .enter(|| self.value.get())
+            .clamp(self.min, self.max);
         let track = cx.alloc_node(NodeKind::Control(ControlNodeData {
             kind: "slider",
             value_f32: Some(initial),
@@ -689,7 +696,9 @@ impl Primitive for Picker {
         let sel_for_text = self.selected.clone();
         let opts_for_text = options.clone();
         let label = Text::new(move || {
-            let idx = sel_for_text.get().min(opts_for_text.len().saturating_sub(1));
+            let idx = sel_for_text
+                .get()
+                .min(opts_for_text.len().saturating_sub(1));
             let val = opts_for_text.get(idx).map(String::as_str).unwrap_or("");
             format!("{val} ▾")
         })
@@ -788,7 +797,11 @@ impl Primitive for Checkbox {
             move |n, checked| {
                 n.visual_props.background = Some(if checked { accent } else { surface });
                 n.visual_props.border = Some((1.5, if checked { accent } else { border }));
-                n.accessibility.value = Some(if checked { "true".into() } else { "false".into() });
+                n.accessibility.value = Some(if checked {
+                    "true".into()
+                } else {
+                    "false".into()
+                });
                 if let NodeKind::Control(c) = &mut n.kind {
                     c.value_bool = Some(checked);
                 }
