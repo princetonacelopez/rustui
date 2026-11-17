@@ -6,11 +6,13 @@ use std::rc::Rc;
 
 use slotmap::new_key_type;
 
-use crate::signal::{Binding, EffectId, MemoId, SignalKey, StateId, Subscriber};
+use crate::signal::{
+    Binding, EffectId, MemoId, ReactiveId, SignalKey, StateId, Subscriber, TimerId,
+};
 use crate::types::{
-    AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii, DragEvent,
-    Edges, Frame, HorizontalAlignment, KeyEvent, PinchEvent, Point, PointerEvent, Rect,
-    ScrollEvent, Size, TextDirection, Transition,
+    AccessibilityLive, AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode,
+    CornerRadii, DragEvent, DragPayload, DropEvent, Edges, Frame, HorizontalAlignment, KeyEvent,
+    PinchEvent, Point, PointerEvent, Rect, ScrollEvent, Size, TextDirection, Transition,
 };
 
 new_key_type! {
@@ -341,6 +343,7 @@ pub enum ContainerKind {
         thickness: f32,
         color: Color,
     },
+    ViewThatFits,
     Fragment,
     CustomLayout,
 }
@@ -457,6 +460,8 @@ pub struct LayoutProps {
     pub aspect_ratio: Option<(f32, ContentMode)>,
     pub offset: Point,
     pub layout_priority: f64,
+    pub grid_column_span: usize,
+    pub grid_row_span: usize,
     pub custom_alignment_x: Option<f32>,
     pub custom_alignment_y: Option<f32>,
     pub layout_values: LayoutValueMap,
@@ -504,6 +509,11 @@ pub struct AccessibilityNodeData {
     pub role: AccessibilityRole,
     pub label: Option<String>,
     pub value: Option<String>,
+    pub hint: Option<String>,
+    pub live: AccessibilityLive,
+    pub sort_priority: f32,
+    pub combine_children: bool,
+    pub custom_action_names: Vec<String>,
     pub hidden: bool,
     pub supports_click: bool,
     pub supports_focus: bool,
@@ -547,6 +557,11 @@ pub struct EventHandlers {
     pub on_key: Option<Rc<dyn Fn(KeyEvent) -> bool>>,
     pub on_ime_preedit: Option<ImePreeditFn>,
     pub on_ime_commit: Option<Rc<dyn Fn(String)>>,
+    pub on_size_change: Option<Rc<dyn Fn(Size<f32>)>>,
+    pub on_geometry: Option<Rc<dyn Fn(Rect)>>,
+    pub on_drag_payload: Option<Rc<dyn Fn() -> DragPayload>>,
+    pub on_drop: Option<Rc<dyn Fn(DropEvent) -> bool>>,
+    pub custom_actions: HashMap<String, Rc<dyn Fn()>>,
     pub on_accessibility_set_value: Option<Rc<dyn Fn(String)>>,
     pub on_accessibility_increment: Option<Rc<dyn Fn()>>,
     pub on_accessibility_decrement: Option<Rc<dyn Fn()>>,
@@ -606,6 +621,7 @@ pub struct NodeAnimation {
 pub struct Node {
     pub id: NodeId,
     pub parent: Option<NodeId>,
+    pub attached_to_parent: bool,
     pub children: Vec<NodeId>,
     pub explicit_key: Option<u64>,
     pub kind: NodeKind,
@@ -623,16 +639,24 @@ pub struct Node {
     pub owned_states: Vec<StateId>,
     pub owned_memos: Vec<MemoId>,
     pub owned_effects: Vec<EffectId>,
+    pub owned_timers: Vec<TimerId>,
+    pub owned_reactives: Vec<ReactiveId>,
     pub subscriptions: Vec<(SignalKey, Subscriber)>,
     pub updaters: Vec<ReactiveUpdater>,
     pub paint_dirty_generation: u64,
+    pub last_reported_size: Option<Size<f32>>,
+    pub last_reported_bounds: Option<Rect>,
+    pub source_location: Option<(&'static str, u32, u32)>,
 }
 
 impl Node {
+    #[track_caller]
     pub fn new(id: NodeId, kind: NodeKind) -> Self {
+        let loc = std::panic::Location::caller();
         Self {
             id,
             parent: None,
+            attached_to_parent: false,
             children: Vec::new(),
             explicit_key: None,
             kind,
@@ -650,9 +674,14 @@ impl Node {
             owned_states: Vec::new(),
             owned_memos: Vec::new(),
             owned_effects: Vec::new(),
+            owned_timers: Vec::new(),
+            owned_reactives: Vec::new(),
             subscriptions: Vec::new(),
             updaters: Vec::new(),
             paint_dirty_generation: 0,
+            last_reported_size: None,
+            last_reported_bounds: None,
+            source_location: Some((loc.file(), loc.line(), loc.column())),
         }
     }
 

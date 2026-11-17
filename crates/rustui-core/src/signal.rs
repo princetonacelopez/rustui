@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use slotmap::{SlotMap, new_key_type};
 
@@ -26,6 +26,8 @@ new_key_type! {
     pub struct EffectId;
     /// Arena key for a reactive node updater binding.
     pub struct ReactiveId;
+    /// Arena key for a managed [`TimerId`] scoped to a runtime or node.
+    pub struct TimerId;
 }
 
 /// Identifies any reactive signal source.
@@ -68,9 +70,19 @@ struct MemoEntry {
     version: u64,
 }
 
+type EffectRunFn = Rc<RefCell<dyn FnMut() -> Option<Box<dyn FnOnce()>>>>;
+
 struct EffectEntry {
-    run: Rc<RefCell<dyn FnMut()>>,
+    run: EffectRunFn,
+    cleanup: Option<Box<dyn FnOnce()>>,
     deps: Vec<SignalKey>,
+}
+
+struct TimerEntry {
+    interval: Duration,
+    repeating: bool,
+    next_fire: Instant,
+    callback: Rc<dyn Fn()>,
 }
 
 /// Type-erased reactive property applicator closure.
@@ -124,8 +136,10 @@ pub struct RuntimeInner {
     states: SlotMap<StateId, StateEntry>,
     memos: SlotMap<MemoId, MemoEntry>,
     effects: SlotMap<EffectId, EffectEntry>,
+    timers: SlotMap<TimerId, TimerEntry>,
     reactives: SlotMap<ReactiveId, NodeReactiveEntry>,
     tracking_stack: Vec<(TrackingTarget, Vec<SignalKey>)>,
+    evaluating_memos: Vec<MemoId>,
     dirty_memos: BinaryHeap<DirtyMemoItem>,
     dirty_memo_set: HashSet<MemoId>,
     pending_updaters: Vec<ReactiveId>,
@@ -135,6 +149,10 @@ pub struct RuntimeInner {
     pending_effects: Vec<EffectId>,
     pending_effect_set: HashSet<EffectId>,
     pub scheduler: Scheduler,
+    pub high_contrast: bool,
+    pub forced_colors: bool,
+    pub text_scale_factor: f32,
+    pub hot_reload_diagnostics: Vec<String>,
     task_tx: mpsc::Sender<UiTask>,
     task_rx: mpsc::Receiver<UiTask>,
     wake_callback: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -163,8 +181,10 @@ impl RuntimeInner {
             states: SlotMap::with_key(),
             memos: SlotMap::with_key(),
             effects: SlotMap::with_key(),
+            timers: SlotMap::with_key(),
             reactives: SlotMap::with_key(),
             tracking_stack: Vec::new(),
+            evaluating_memos: Vec::new(),
             dirty_memos: BinaryHeap::new(),
             dirty_memo_set: HashSet::new(),
             pending_updaters: Vec::new(),
@@ -174,6 +194,10 @@ impl RuntimeInner {
             pending_effects: Vec::new(),
             pending_effect_set: HashSet::new(),
             scheduler: Scheduler::new(),
+            high_contrast: false,
+            forced_colors: false,
+            text_scale_factor: 1.0,
+            hot_reload_diagnostics: Vec::new(),
             task_tx,
             task_rx,
             wake_callback: None,
@@ -297,9 +321,13 @@ impl RuntimeInner {
         let propagate_paint = flags.intersects(DirtyFlags::PAINT);
         let propagate_a11y = flags.intersects(DirtyFlags::ACCESSIBILITY);
         let mut cursor = node.parent;
-        let mut hit_fixed_boundary = node.layout_props.is_fixed_size_boundary();
-        if hit_fixed_boundary {
+        if node.layout_props.is_fixed_size_boundary() {
             propagate_layout = false;
+            self.scheduler.metrics.fixed_boundary_stops = self
+                .scheduler
+                .metrics
+                .fixed_boundary_stops
+                .saturating_add(1);
         }
 
         while let Some(parent_id) = cursor {
@@ -310,8 +338,11 @@ impl RuntimeInner {
                 parent.dirty.insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT);
                 if parent.layout_props.is_fixed_size_boundary() {
                     propagate_layout = false;
-                    hit_fixed_boundary = true;
-                    let _ = hit_fixed_boundary;
+                    self.scheduler.metrics.fixed_boundary_stops = self
+                        .scheduler
+                        .metrics
+                        .fixed_boundary_stops
+                        .saturating_add(1);
                 }
             } else {
                 if had_layout {
@@ -637,6 +668,17 @@ impl Runtime {
     fn recompute_memo(&self, memo_id: MemoId) {
         let (compute, old_deps) = {
             let mut inner = self.inner.borrow_mut();
+            if inner.evaluating_memos.contains(&memo_id) {
+                let cycle: Vec<String> = inner
+                    .evaluating_memos
+                    .iter()
+                    .map(|id| format!("{id:?}"))
+                    .collect();
+                panic!(
+                    "Memo dependency cycle detected: [{} -> {memo_id:?}]",
+                    cycle.join(" -> ")
+                );
+            }
             let Some(entry) = inner.memos.get_mut(memo_id) else {
                 return;
             };
@@ -645,12 +687,31 @@ impl Runtime {
             for dep in &old_deps {
                 inner.remove_subscriber_from_signal(*dep, Subscriber::Memo(memo_id));
             }
+            inner.evaluating_memos.push(memo_id);
             inner
                 .tracking_stack
                 .push((TrackingTarget::Memo(memo_id), Vec::new()));
             (compute, old_deps)
         };
         let _ = old_deps;
+
+        struct EvalGuard<'a> {
+            rt: &'a Runtime,
+            memo_id: MemoId,
+        }
+        impl Drop for EvalGuard<'_> {
+            fn drop(&mut self) {
+                let mut inner = self.rt.inner.borrow_mut();
+                if let Some(pos) = inner
+                    .evaluating_memos
+                    .iter()
+                    .rposition(|id| *id == self.memo_id)
+                {
+                    inner.evaluating_memos.remove(pos);
+                }
+            }
+        }
+        let _guard = EvalGuard { rt: self, memo_id };
 
         let value = self.enter(|| compute());
 
@@ -680,11 +741,32 @@ impl Runtime {
     /// Creates a post-layout side [`EffectHandle`] owned optionally by `owner`.
     ///
     /// Rule: Effects run after layout, never during build.
-    pub fn create_effect(&self, f: impl FnMut() + 'static, owner: Option<NodeId>) -> EffectHandle {
+    pub fn create_effect(
+        &self,
+        mut f: impl FnMut() + 'static,
+        owner: Option<NodeId>,
+    ) -> EffectHandle {
+        self.create_effect_cleanup(
+            move || {
+                f();
+                None
+            },
+            owner,
+        )
+    }
+
+    /// Creates a post-layout side [`EffectHandle`] returning an optional cleanup closure
+    /// that runs before re-execution and when `owner` is disposed.
+    pub fn create_effect_cleanup(
+        &self,
+        f: impl FnMut() -> Option<Box<dyn FnOnce()>> + 'static,
+        owner: Option<NodeId>,
+    ) -> EffectHandle {
         let mut inner = self.inner.borrow_mut();
-        let run: Rc<RefCell<dyn FnMut()>> = Rc::new(RefCell::new(f));
+        let run: EffectRunFn = Rc::new(RefCell::new(f));
         let id = inner.effects.insert(EffectEntry {
             run,
+            cleanup: None,
             deps: Vec::new(),
         });
         if let Some(owner_id) = owner
@@ -698,6 +780,125 @@ impl Runtime {
         EffectHandle {
             id,
             runtime_id: inner.id,
+        }
+    }
+
+    /// Schedules a managed one-shot or repeating timer scoped optionally to `owner`.
+    pub fn create_timer(
+        &self,
+        interval: Duration,
+        repeating: bool,
+        callback: impl Fn() + 'static,
+        owner: Option<NodeId>,
+    ) -> TimerId {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.timers.insert(TimerEntry {
+            interval,
+            repeating,
+            next_fire: Instant::now() + interval,
+            callback: Rc::new(callback),
+        });
+        if let Some(owner_id) = owner
+            && let Some(node) = inner.nodes.get_mut(owner_id)
+        {
+            node.owned_timers.push(id);
+        }
+        id
+    }
+
+    /// Cancels and removes a managed timer.
+    pub fn remove_timer(&self, timer_id: TimerId) {
+        self.inner.borrow_mut().timers.remove(timer_id);
+    }
+
+    /// Fires any timers whose deadline `<= now`, rescheduling repeating ones and pruning one-shots.
+    pub fn tick_timers(&self, now: Instant) -> usize {
+        let mut due_callbacks: Vec<Rc<dyn Fn()>> = Vec::new();
+        let mut remove_ids = Vec::new();
+        {
+            let mut inner = self.inner.borrow_mut();
+            for (id, entry) in &mut inner.timers {
+                if now >= entry.next_fire {
+                    due_callbacks.push(entry.callback.clone());
+                    if entry.repeating {
+                        let step = entry.interval.max(Duration::from_millis(1));
+                        while entry.next_fire <= now {
+                            entry.next_fire += step;
+                        }
+                    } else {
+                        remove_ids.push(id);
+                    }
+                }
+            }
+            for id in remove_ids {
+                inner.timers.remove(id);
+            }
+        }
+        let fired = due_callbacks.len();
+        for cb in due_callbacks {
+            self.enter(|| cb());
+        }
+        fired
+    }
+
+    /// Returns whether high-contrast mode is enabled on this runtime.
+    pub fn is_high_contrast(&self) -> bool {
+        self.inner.borrow().high_contrast
+    }
+
+    /// Sets high-contrast accessibility mode and marks the root subtree for repaint.
+    pub fn set_high_contrast(&self, enabled: bool) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.high_contrast != enabled {
+            inner.high_contrast = enabled;
+            if let Some(root) = inner.root {
+                inner.mark_dirty(root, DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
+            }
+        }
+    }
+
+    /// Returns whether forced-colors accessibility mode is active.
+    pub fn is_forced_colors(&self) -> bool {
+        self.inner.borrow().forced_colors
+    }
+
+    /// Sets forced-colors accessibility mode.
+    pub fn set_forced_colors(&self, enabled: bool) {
+        let mut inner = self.inner.borrow_mut();
+        if inner.forced_colors != enabled {
+            inner.forced_colors = enabled;
+            if let Some(root) = inner.root {
+                inner.mark_dirty(root, DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
+            }
+        }
+    }
+
+    /// Returns the system/app text scaling multiplier (`1.0` default, up to `2.5`).
+    pub fn text_scale_factor(&self) -> f32 {
+        self.inner.borrow().text_scale_factor
+    }
+
+    /// Updates the text scaling multiplier (`0.75..=2.5`) and marks the tree for re-layout.
+    pub fn set_text_scale_factor(&self, scale: f32) {
+        let clamped = scale.clamp(0.75, 2.5);
+        let mut inner = self.inner.borrow_mut();
+        if (inner.text_scale_factor - clamped).abs() > f32::EPSILON {
+            inner.text_scale_factor = clamped;
+            let all_nodes: Vec<NodeId> = inner.nodes.keys().collect();
+            for nid in all_nodes {
+                if let Some(n) = inner.nodes.get_mut(nid)
+                    && matches!(n.kind, crate::node::NodeKind::Text(_))
+                {
+                    n.dirty
+                        .insert(DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
+                }
+            }
+            if let Some(root) = inner.root {
+                inner.mark_dirty(
+                    root,
+                    DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY,
+                );
+            }
         }
     }
 
@@ -834,6 +1035,9 @@ impl Runtime {
                 post_inner,
                 deps: Vec::new(),
             });
+            if let Some(n) = inner.nodes.get_mut(node) {
+                n.owned_reactives.push(id);
+            }
             let _ = uid;
             id
         };
@@ -1044,6 +1248,40 @@ impl Runtime {
         });
     }
 
+    /// Runs `fut` on a caller-supplied [`AsyncExecutor`] and delivers the result to `on_complete` on the UI thread.
+    pub fn spawn_future<E, F, R>(&self, executor: &E, fut: F, on_complete: impl FnOnce(R) + 'static)
+    where
+        E: AsyncExecutor,
+        F: std::future::Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let spawn_id = {
+            let mut inner = self.inner.borrow_mut();
+            let id = inner.next_spawn_id;
+            inner.next_spawn_id = id.wrapping_add(1);
+            inner.spawn_callbacks.insert(
+                id,
+                Box::new(move |boxed| {
+                    let val = *boxed
+                        .downcast::<R>()
+                        .expect("spawn_future callback mismatch");
+                    on_complete(val);
+                }),
+            );
+            id
+        };
+        let sender = self.task_sender();
+        executor.spawn(Box::pin(async move {
+            let result = fut.await;
+            sender.send(move |rt| {
+                let cb = rt.with_inner_mut(|inner| inner.spawn_callbacks.remove(&spawn_id));
+                if let Some(cb) = cb {
+                    cb(Box::new(result));
+                }
+            });
+        }));
+    }
+
     /// Drains background tasks posted via `cx.spawn` or [`TaskSender`].
     pub fn poll_tasks(&self) -> usize {
         let mut tasks = Vec::new();
@@ -1064,9 +1302,11 @@ impl Runtime {
     ///
     /// Returns `(reactive_updates, rebuilt_nodes)`.
     pub fn flush_reactive(&self) -> (usize, usize) {
+        const MAX_MEMO_DEFERS: usize = 64;
         let start = Instant::now();
         let mut reactive_updates = 0usize;
         let mut rebuilt_nodes = 0usize;
+        let mut defer_counts: HashMap<MemoId, usize> = HashMap::new();
 
         // 1. Evaluate all dirty memos at most once in dependency order.
         loop {
@@ -1102,6 +1342,14 @@ impl Runtime {
                 })
             };
             if let Some(up_depth) = max_dirty_dep_depth {
+                let defers = defer_counts.entry(item.id).or_insert(0);
+                *defers += 1;
+                if *defers > MAX_MEMO_DEFERS {
+                    panic!(
+                        "Memo dependency cycle detected during flush involving {:?}",
+                        item.id
+                    );
+                }
                 let mut inner = self.inner.borrow_mut();
                 if let Some(m) = inner.memos.get_mut(item.id) {
                     m.depth = up_depth + 1;
@@ -1116,15 +1364,29 @@ impl Runtime {
             self.recompute_memo(item.id);
         }
 
-        // 2. Run dirty structural rebuilds (`If`, `Switch`, `ForEach`).
-        let rebuilds = {
-            let mut inner = self.inner.borrow_mut();
-            inner.pending_rebuild_set.clear();
-            std::mem::take(&mut inner.pending_rebuilds)
-        };
-        for node_id in rebuilds {
-            if self.rebuild_dynamic_node(node_id) {
-                rebuilt_nodes += 1;
+        // 2. Run dirty structural rebuilds (`If`, `Switch`, `ForEach`) bounded to catch infinite loops.
+        let mut rebuild_passes = 0usize;
+        loop {
+            let rebuilds = {
+                let mut inner = self.inner.borrow_mut();
+                inner.pending_rebuild_set.clear();
+                std::mem::take(&mut inner.pending_rebuilds)
+            };
+            if rebuilds.is_empty() {
+                break;
+            }
+            rebuild_passes += 1;
+            if rebuild_passes > 64 {
+                debug_assert!(
+                    false,
+                    "RustUI exceeded maximum reactive rebuild depth (64) in a single flush"
+                );
+                break;
+            }
+            for node_id in rebuilds {
+                if self.rebuild_dynamic_node(node_id) {
+                    rebuilt_nodes += 1;
+                }
             }
         }
 
@@ -1148,7 +1410,7 @@ impl Runtime {
         (reactive_updates, rebuilt_nodes)
     }
 
-    /// Runs pending [`EffectHandle`] callbacks. Must be called AFTER layout, never during build.
+    /// Runs pending [`EffectHandle`] callbacks (invoking any previous cleanup first). Must be called AFTER layout, never during build.
     pub fn flush_effects(&self) -> usize {
         let effects = {
             let mut inner = self.inner.borrow_mut();
@@ -1157,12 +1419,13 @@ impl Runtime {
         };
         let mut executed = 0usize;
         for effect_id in effects {
-            let run_opt = {
+            let (run_opt, prev_cleanup) = {
                 let mut inner = self.inner.borrow_mut();
                 let Some(entry) = inner.effects.get_mut(effect_id) else {
                     continue;
                 };
                 let old_deps = std::mem::take(&mut entry.deps);
+                let prev_cleanup = entry.cleanup.take();
                 let run = entry.run.clone();
                 for dep in old_deps {
                     inner.remove_subscriber_from_signal(dep, Subscriber::Effect(effect_id));
@@ -1170,13 +1433,15 @@ impl Runtime {
                 inner
                     .tracking_stack
                     .push((TrackingTarget::Effect(effect_id), Vec::new()));
-                Some(run)
+                (Some(run), prev_cleanup)
             };
 
+            if let Some(cleanup) = prev_cleanup {
+                self.enter(cleanup);
+            }
+
             if let Some(run) = run_opt {
-                self.enter(|| {
-                    (run.borrow_mut())();
-                });
+                let next_cleanup = self.enter(|| (run.borrow_mut())());
                 let mut inner = self.inner.borrow_mut();
                 let (_, new_deps) = inner
                     .tracking_stack
@@ -1184,6 +1449,7 @@ impl Runtime {
                     .expect("tracking_stack imbalanced during effect run");
                 if let Some(entry) = inner.effects.get_mut(effect_id) {
                     entry.deps = new_deps;
+                    entry.cleanup = next_cleanup;
                 }
                 executed += 1;
             }
@@ -1390,7 +1656,9 @@ impl Runtime {
     }
 
     /// Allocates a node inheriting the parent's [`crate::node::Environment`].
+    #[track_caller]
     pub fn alloc_node(&self, kind: crate::node::NodeKind, parent: Option<NodeId>) -> NodeId {
+        let loc = std::panic::Location::caller();
         let mut inner = self.inner.borrow_mut();
         let inherited_env = parent
             .and_then(|pid| inner.nodes.get(pid))
@@ -1400,6 +1668,7 @@ impl Runtime {
             let mut n = Node::new(id, kind);
             n.parent = parent;
             n.env = inherited_env;
+            n.source_location = Some((loc.file(), loc.line(), loc.column()));
             n
         });
         inner.scheduler.request_redraw();
@@ -1410,13 +1679,16 @@ impl Runtime {
     pub fn attach_child(&self, parent: NodeId, child: NodeId) {
         let mut inner = self.inner.borrow_mut();
         let parent_env = inner.nodes.get(parent).map(|p| p.env.clone());
-        if let Some(p) = inner.nodes.get_mut(parent)
-            && !p.children.contains(&child)
-        {
+        let already_attached = inner
+            .nodes
+            .get(child)
+            .is_some_and(|c| c.attached_to_parent && c.parent == Some(parent));
+        if !already_attached && let Some(p) = inner.nodes.get_mut(parent) {
             p.children.push(child);
         }
         if let Some(c) = inner.nodes.get_mut(child) {
             c.parent = Some(parent);
+            c.attached_to_parent = true;
             if let Some(env) = parent_env {
                 c.env.inherit_from(&env);
             }
@@ -1454,13 +1726,27 @@ impl Runtime {
     }
 
     /// Disposes `node_id` and its entire subtree, removing all owned states, memos,
-    /// effects, reactive updaters, animations, and upstream signal subscriptions.
+    /// effects (running cleanups), timers, reactive updaters, animations, and upstream signal subscriptions.
     pub fn remove_node(&self, node_id: NodeId) {
-        let mut inner = self.inner.borrow_mut();
-        Self::remove_node_inner(&mut inner, node_id);
+        let mut cleanups = Vec::new();
+        {
+            let mut inner = self.inner.borrow_mut();
+            Self::remove_node_inner(&mut inner, node_id, &mut cleanups);
+        }
+        if !cleanups.is_empty() {
+            self.enter(|| {
+                for cleanup in cleanups {
+                    cleanup();
+                }
+            });
+        }
     }
 
-    fn remove_node_inner(inner: &mut RuntimeInner, node_id: NodeId) {
+    fn remove_node_inner(
+        inner: &mut RuntimeInner,
+        node_id: NodeId,
+        cleanups: &mut Vec<Box<dyn FnOnce()>>,
+    ) {
         let Some(node) = inner.nodes.remove(node_id) else {
             return;
         };
@@ -1471,10 +1757,11 @@ impl Runtime {
             parent.children.retain(|c| *c != node_id);
         }
 
-        // Remove animations and pending queues.
+        // Remove animations and pending queues (O(1) guard avoids scanning empty/unrelated queues).
         inner.scheduler.remove_node_animations(node_id);
-        inner.pending_rebuild_set.remove(&node_id);
-        inner.pending_rebuilds.retain(|n| *n != node_id);
+        if inner.pending_rebuild_set.remove(&node_id) {
+            inner.pending_rebuilds.retain(|n| *n != node_id);
+        }
 
         // Dispose subscriptions held by this node.
         for (signal, sub) in node.subscriptions {
@@ -1485,28 +1772,25 @@ impl Runtime {
                 for dep in entry.deps {
                     inner.remove_subscriber_from_signal(dep, Subscriber::NodeUpdater(rid));
                 }
-                inner.pending_updater_set.remove(&rid);
-                inner.pending_updaters.retain(|r| *r != rid);
+                if inner.pending_updater_set.remove(&rid) {
+                    inner.pending_updaters.retain(|r| *r != rid);
+                }
             }
         }
 
-        // Also remove any reactive entries pointing to this node.
-        let orphan_reactives: Vec<ReactiveId> = inner
-            .reactives
-            .iter()
-            .filter_map(|(rid, r)| if r.node == node_id { Some(rid) } else { None })
-            .collect();
-        for rid in orphan_reactives {
+        // Remove all reactive entries owned by this node without scanning the global table.
+        for rid in node.owned_reactives {
             if let Some(entry) = inner.reactives.remove(rid) {
                 for dep in entry.deps {
                     inner.remove_subscriber_from_signal(dep, Subscriber::NodeUpdater(rid));
                 }
-                inner.pending_updater_set.remove(&rid);
-                inner.pending_updaters.retain(|r| *r != rid);
+                if inner.pending_updater_set.remove(&rid) {
+                    inner.pending_updaters.retain(|r| *r != rid);
+                }
             }
         }
 
-        // Dispose owned states, memos, and effects.
+        // Dispose owned states, memos, effects, and timers.
         for sid in node.owned_states {
             inner.states.remove(sid);
         }
@@ -1519,18 +1803,115 @@ impl Runtime {
             inner.dirty_memo_set.remove(&mid);
         }
         for eid in node.owned_effects {
-            if let Some(e) = inner.effects.remove(eid) {
+            if let Some(mut e) = inner.effects.remove(eid) {
                 for dep in e.deps {
                     inner.remove_subscriber_from_signal(dep, Subscriber::Effect(eid));
                 }
+                if let Some(cleanup) = e.cleanup.take() {
+                    cleanups.push(cleanup);
+                }
             }
-            inner.pending_effect_set.remove(&eid);
-            inner.pending_effects.retain(|e| *e != eid);
+            if inner.pending_effect_set.remove(&eid) {
+                inner.pending_effects.retain(|e| *e != eid);
+            }
+        }
+        for tid in node.owned_timers {
+            inner.timers.remove(tid);
         }
 
         for child in node.children {
-            Self::remove_node_inner(inner, child);
+            Self::remove_node_inner(inner, child, cleanups);
         }
+    }
+
+    /// Replaces `container_id`'s children with `build_new` while preserving hook `State` values
+    /// whenever the root node's `HookSlot` types match identically in order.
+    pub fn reload_subtree(
+        &self,
+        container_id: NodeId,
+        build_new: impl FnOnce(&mut crate::view::BuildCx) -> NodeId,
+    ) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        let saved_slots: Vec<(std::any::TypeId, Box<dyn Any>)> = {
+            let mut inner = self.inner.borrow_mut();
+            let first_child = inner
+                .nodes
+                .get(container_id)
+                .and_then(|n| n.children.first().copied());
+            if let Some(cid) = first_child
+                && let Some(cnode) = inner.nodes.get(cid)
+            {
+                let slots = cnode.hook_slots.clone();
+                let mut out = Vec::with_capacity(slots.len());
+                for slot in slots {
+                    if let Some(st) = inner.states.get_mut(slot.state_id)
+                        && let Some(val) = st.value.take()
+                    {
+                        out.push((slot.type_id, val));
+                    }
+                }
+                out
+            } else {
+                Vec::new()
+            }
+        };
+
+        let old_children = self.with_inner_mut(|inner| {
+            inner
+                .nodes
+                .get_mut(container_id)
+                .map(|n| std::mem::take(&mut n.children))
+                .unwrap_or_default()
+        });
+        for old in old_children {
+            self.remove_node(old);
+        }
+
+        let mut bcx = crate::view::BuildCx::new(self.clone(), Some(container_id));
+        let new_root = self.enter(|| build_new(&mut bcx));
+        self.attach_child(container_id, new_root);
+
+        if !saved_slots.is_empty() {
+            let mut inner = self.inner.borrow_mut();
+            let new_slots = inner
+                .nodes
+                .get(new_root)
+                .map(|n| n.hook_slots.clone())
+                .unwrap_or_default();
+            let matches_types = new_slots.len() == saved_slots.len()
+                && new_slots
+                    .iter()
+                    .zip(saved_slots.iter())
+                    .all(|(ns, (tid, _))| ns.type_id == *tid);
+            if matches_types {
+                for (ns, (_, val)) in new_slots.into_iter().zip(saved_slots) {
+                    if let Some(st) = inner.states.get_mut(ns.state_id) {
+                        st.value = Some(val);
+                    }
+                    inner.notify_signal(SignalKey::State(ns.state_id));
+                }
+            } else {
+                diagnostics.push(format!(
+                    "Hot reload reset subtree state slots (hook layout changed: {} -> {} slots)",
+                    saved_slots.len(),
+                    new_slots.len()
+                ));
+            }
+            inner.hot_reload_diagnostics = diagnostics.clone();
+            inner.mark_dirty(
+                container_id,
+                DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY,
+            );
+        } else {
+            self.with_inner_mut(|inner| {
+                inner.hot_reload_diagnostics.clear();
+                inner.mark_dirty(
+                    container_id,
+                    DirtyFlags::LAYOUT | DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY,
+                );
+            });
+        }
+        diagnostics
     }
 
     /// Returns total live nodes in the arena.
@@ -1546,6 +1927,16 @@ impl Runtime {
     /// Returns total live memos in the arena.
     pub fn memo_count(&self) -> usize {
         self.inner.borrow().memos.len()
+    }
+
+    /// Returns total live effects in the arena.
+    pub fn effect_count(&self) -> usize {
+        self.inner.borrow().effects.len()
+    }
+
+    /// Returns total live timers in the arena.
+    pub fn timer_count(&self) -> usize {
+        self.inner.borrow().timers.len()
     }
 
     /// Returns true when either nodes are dirty or animations are running.
@@ -1761,7 +2152,119 @@ pub struct EffectHandle {
     pub runtime_id: u64,
 }
 
-/// Trait for model structs composed of reactive per-field signals.
+/// Trait for model structs composed of reactive per-field signals (`#[derive(Observable)]` / `cx.model(...)`).
+pub trait ObservableModel {
+    type Handle: Copy + Clone + 'static;
+    fn into_model(self, rt: &Runtime, owner: Option<NodeId>) -> Self::Handle;
+}
+
+/// Pluggable async future executor trait used by `cx.spawn_future(...)`.
+pub trait AsyncExecutor {
+    fn spawn(&self, fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>);
+}
+
+/// Lifecycle state of an asynchronous [`Resource<T>`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceState<T> {
+    Loading,
+    Ready(T),
+    Error(String),
+}
+
+/// Copyable handle to a background-fetched reactive value with loading, ready, and error states.
+pub struct Resource<T: 'static> {
+    state: State<ResourceState<T>>,
+    reload_fn: State<Rc<dyn Fn()>>,
+}
+
+impl<T: 'static> Copy for Resource<T> {}
+
+impl<T: 'static> Clone for Resource<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> std::fmt::Debug for Resource<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resource")
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+impl<T: Clone + Send + 'static> Resource<T> {
+    /// Reads the current [`ResourceState<T>`] and subscribes the caller.
+    pub fn get(self) -> ResourceState<T> {
+        self.state.get()
+    }
+
+    /// Reads without subscribing.
+    pub fn get_untracked(self) -> ResourceState<T> {
+        self.state.get_untracked()
+    }
+
+    /// Returns true while loading.
+    pub fn is_loading(self) -> bool {
+        matches!(self.state.get(), ResourceState::Loading)
+    }
+
+    /// Returns the resolved `T` value if ready.
+    pub fn ready(self) -> Option<T> {
+        match self.state.get() {
+            ResourceState::Ready(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Returns the error message if the last fetch failed.
+    pub fn error(self) -> Option<String> {
+        match self.state.get() {
+            ResourceState::Error(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Exposes the backing reactive `State<ResourceState<T>>`.
+    pub fn state_handle(self) -> State<ResourceState<T>> {
+        self.state
+    }
+
+    /// Re-triggers the background fetch.
+    pub fn reload(self) {
+        let f = self.reload_fn.get_untracked();
+        f();
+    }
+}
+
+impl Runtime {
+    /// Fetches an asynchronous [`Resource<T>`] managed on a background thread and delivered to the UI thread.
+    pub fn create_resource<T: Clone + Send + 'static>(
+        &self,
+        fetcher: impl Fn() -> Result<T, String> + Send + Sync + 'static,
+        owner: Option<NodeId>,
+    ) -> Resource<T> {
+        let state = self.create_state(ResourceState::<T>::Loading, owner);
+        let fetcher = Arc::new(fetcher);
+        let rt_clone = self.clone();
+        let trigger: Rc<dyn Fn()> = Rc::new(move || {
+            rt_clone.set_state(state, ResourceState::Loading);
+            let f = fetcher.clone();
+            rt_clone.spawn(
+                move || f(),
+                move |res| match res {
+                    Ok(v) => state.set(ResourceState::Ready(v)),
+                    Err(e) => state.set(ResourceState::Error(e)),
+                },
+            );
+        });
+        trigger();
+        let reload_fn = self.create_state(trigger, owner);
+        Resource { state, reload_fn }
+    }
+}
+
+/// Trait for legacy manual observable models.
 pub trait Observable {
     fn create(cx: &mut crate::view::Cx) -> Self;
 }

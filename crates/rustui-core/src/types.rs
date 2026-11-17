@@ -462,6 +462,23 @@ impl ThemePalette {
         }
     }
 
+    pub fn high_contrast() -> Self {
+        Self {
+            is_dark: true,
+            primary: Color::WHITE,
+            secondary: Color::from_hex(0xe2e8f0),
+            background: Color::BLACK,
+            surface: Color::from_hex(0x090d16),
+            surface_elevated: Color::from_hex(0x161f30),
+            accent: Color::from_hex(0x60a5fa),
+            on_accent: Color::BLACK,
+            border: Color::from_hex(0xf8fafc),
+            destructive: Color::from_hex(0xff6b6b),
+            success: Color::from_hex(0x4ade80),
+            warning: Color::from_hex(0xfacc15),
+        }
+    }
+
     /// Resolves a semantic [`Color`] using this palette while preserving its alpha channel.
     #[inline]
     pub fn resolve(&self, color: Color) -> Color {
@@ -876,6 +893,42 @@ pub enum AccessibilityRole {
     Splitter,
     Navigation,
     ProgressIndicator,
+    Meter,
+    AlertDialog,
+    Status,
+}
+
+/// Politeness setting for live-region screen-reader announcements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AccessibilityLive {
+    #[default]
+    Off,
+    Polite,
+    Assertive,
+}
+
+/// Payload carried during intra-app or OS-to-app drag-and-drop operations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DragPayload {
+    Text(String),
+    Files(Vec<std::path::PathBuf>),
+    Custom { format: String, data: Vec<u8> },
+}
+
+/// Drop event delivered to registered drop target views.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropEvent {
+    pub position: Point,
+    pub payload: DragPayload,
+}
+
+/// Window safe-area insets for custom title bars or edge padding.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SafeAreaInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
 }
 
 /// Keyboard modifier flags.

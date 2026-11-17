@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/rustui-macros",
     "crates/rustui-core",
     "crates/rustui-layout",
     "crates/rustui-render",
@@ -11,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
@@ -26,18 +27,18 @@ dbg_macro = "deny"
 todo = "deny"
 
 [workspace.dependencies]
-rustui-core = { path = "crates/rustui-core", version = "0.1.0" }
-rustui-layout = { path = "crates/rustui-layout", version = "0.1.0" }
-rustui-render = { path = "crates/rustui-render", version = "0.1.0" }
-rustui-text = { path = "crates/rustui-text", version = "0.1.0" }
-rustui-platform = { path = "crates/rustui-platform", version = "0.1.0" }
-rustui-widgets = { path = "crates/rustui-widgets", version = "0.1.0" }
+rustui-macros = { path = "crates/rustui-macros", version = "0.2.0" }
+rustui-core = { path = "crates/rustui-core", version = "0.2.0" }
+rustui-layout = { path = "crates/rustui-layout", version = "0.2.0" }
+rustui-render = { path = "crates/rustui-render", version = "0.2.0" }
+rustui-text = { path = "crates/rustui-text", version = "0.2.0" }
+rustui-platform = { path = "crates/rustui-platform", version = "0.2.0" }
+rustui-widgets = { path = "crates/rustui-widgets", version = "0.2.0" }
 
 accesskit = "0.25"
 accesskit_winit = { version = "0.34", default-features = false, features = ["accesskit_unix", "async-io", "rwh_06"] }
 arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
 bytemuck = { version = "1.25", features = ["derive"] }
-clap = { version = "4.6", features = ["derive"] }
 fontique = { version = "0.13", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 kurbo = "0.13"

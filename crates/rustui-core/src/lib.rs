@@ -13,15 +13,18 @@ pub use node::{
     LayoutValueMap, Node, NodeAnimation, NodeId, NodeKind, ScrollAxes, ScrollNodeData,
     ShaderNodeData, TextNodeData, TextSpanData, TruncationMode, VirtualListNodeData, VisualProps,
 };
+pub use rustui_macros::{Observable, preview};
 pub use scheduler::{AnimProperty, AnimValue, FrameMetrics, Scheduler, with_animation};
 pub use signal::{
-    Binding, EffectHandle, Memo, Observable, Runtime, RuntimeInner, State, TaskSender,
+    AsyncExecutor, Binding, EffectHandle, Memo, Observable, ObservableModel, Resource,
+    ResourceState, Runtime, RuntimeInner, State, TaskSender, TimerId,
 };
 pub use types::{
-    AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii, DragEvent,
-    Edge, Edges, Frame, HorizontalAlignment, IntoEdges, IntoPx, KeyCode, KeyEvent, Modifiers,
-    PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Rect, ScrollEvent, SemanticColor,
-    Size, TextDirection, ThemePalette, Transition, VerticalAlignment,
+    AccessibilityLive, AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode,
+    CornerRadii, DragEvent, DragPayload, DropEvent, Edge, Edges, Frame, HorizontalAlignment,
+    IntoEdges, IntoPx, KeyCode, KeyEvent, Modifiers, PinchEvent, Point, PointerButton,
+    PointerEvent, PointerPhase, Rect, SafeAreaInsets, ScrollEvent, SemanticColor, Size,
+    TextDirection, ThemePalette, Transition, VerticalAlignment,
 };
 pub use view::{
     AnyView, Background, BuildCx, Cx, EmptyView, ForEach, Framed, If, IntoTextSource, Modified,
@@ -30,7 +33,7 @@ pub use view::{
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Instant;
 
@@ -413,5 +416,180 @@ mod tests {
         });
         assert!(rt.with_inner(|inner| !inner.scheduler.animations.is_empty()));
         let _ = box_node;
+    }
+
+    #[test]
+    fn hundred_thousand_node_disposal_leaves_zero_leaks() {
+        let rt = Runtime::new();
+        let base_nodes = rt.node_count();
+        let base_states = rt.state_count();
+        let base_memos = rt.memo_count();
+        let base_effects = rt.effect_count();
+        let base_timers = rt.timer_count();
+
+        let container = rt.alloc_node(NodeKind::Composite, None);
+        for i in 0..100_000 {
+            let n = rt.alloc_node(NodeKind::Modifier, Some(container));
+            rt.attach_child(container, n);
+            if i % 100 == 0 {
+                let s = rt.create_state(i, Some(n));
+                let _m = rt.create_memo(move || s.get() + 1, Some(n));
+                rt.create_effect(move || {}, Some(n));
+                rt.create_timer(std::time::Duration::from_secs(10), true, || {}, Some(n));
+            }
+        }
+        assert_eq!(rt.node_count(), base_nodes + 100_001);
+        assert!(rt.state_count() >= base_states + 1_000);
+        assert!(rt.memo_count() >= base_memos + 1_000);
+        assert!(rt.effect_count() >= base_effects + 1_000);
+        assert!(rt.timer_count() >= base_timers + 1_000);
+
+        rt.remove_node(container);
+        assert_eq!(rt.node_count(), base_nodes);
+        assert_eq!(rt.state_count(), base_states);
+        assert_eq!(rt.memo_count(), base_memos);
+        assert_eq!(rt.effect_count(), base_effects);
+        assert_eq!(rt.timer_count(), base_timers);
+    }
+
+    #[test]
+    #[should_panic(expected = "Memo dependency cycle detected")]
+    fn memo_cycle_detection_panics_cleanly() {
+        let rt = Runtime::new();
+        rt.enter(|| {
+            let trigger = rt.create_state(false, None);
+            let slot_a: Rc<RefCell<Option<Memo<i32>>>> = Rc::new(RefCell::new(None));
+            let slot_b: Rc<RefCell<Option<Memo<i32>>>> = Rc::new(RefCell::new(None));
+
+            let b_ref = slot_b.clone();
+            let a = rt.create_memo(
+                move || {
+                    if trigger.get() {
+                        b_ref.borrow().unwrap().get() + 1
+                    } else {
+                        1
+                    }
+                },
+                None,
+            );
+            *slot_a.borrow_mut() = Some(a);
+
+            let a_ref = slot_a.clone();
+            let b = rt.create_memo(move || a_ref.borrow().unwrap().get() + 1, None);
+            *slot_b.borrow_mut() = Some(b);
+
+            trigger.set(true);
+            rt.flush_reactive();
+            let _ = b.get();
+        });
+    }
+
+    #[test]
+    fn derive_observable_model_subscribes_per_field() {
+        #[derive(Observable)]
+        struct Project {
+            name: String,
+            dirty: bool,
+        }
+
+        let name_renders = Rc::new(Cell::new(0usize));
+        let dirty_renders = Rc::new(Cell::new(0usize));
+        let nr = name_renders.clone();
+        let dr = dirty_renders.clone();
+        let model_slot: Rc<Cell<Option<ProjectObservable>>> = Rc::new(Cell::new(None));
+        let slot_c = model_slot.clone();
+
+        struct ModelView {
+            nr: Rc<Cell<usize>>,
+            dr: Rc<Cell<usize>>,
+            slot: Rc<Cell<Option<ProjectObservable>>>,
+        }
+        impl View for ModelView {
+            fn body(self, cx: &mut Cx) -> impl View {
+                let model = cx.model(Project {
+                    name: "rustui".into(),
+                    dirty: false,
+                });
+                self.slot.set(Some(model));
+                let nr = self.nr;
+                let dr = self.dr;
+                TestColumn((
+                    TestLabel(TextSource::Reactive(Rc::new(move || {
+                        nr.set(nr.get() + 1);
+                        model.name()
+                    }))),
+                    TestLabel(TextSource::Reactive(Rc::new(move || {
+                        dr.set(dr.get() + 1);
+                        format!("dirty={}", model.dirty())
+                    }))),
+                ))
+            }
+        }
+
+        let rt = Runtime::new();
+        let mut bcx = BuildCx::new(rt.clone(), None);
+        let _root = ModelView {
+            nr,
+            dr,
+            slot: slot_c,
+        }
+        .build_node(&mut bcx);
+        assert_eq!(name_renders.get(), 1);
+        assert_eq!(dirty_renders.get(), 1);
+
+        let model = model_slot.get().unwrap();
+        rt.enter(|| model.set_dirty(true));
+        rt.flush_reactive();
+        assert_eq!(name_renders.get(), 1, "name subscriber must not re-run");
+        assert_eq!(dirty_renders.get(), 2, "dirty subscriber must update");
+
+        rt.enter(|| model.set_name("anvil".into()));
+        rt.flush_reactive();
+        assert_eq!(name_renders.get(), 2);
+        assert_eq!(dirty_renders.get(), 2);
+    }
+
+    #[test]
+    fn effect_cleanup_timer_and_resource_work() {
+        let rt = Runtime::new();
+        let owner = rt.alloc_node(NodeKind::Composite, None);
+        let mut cx = Cx::new(rt.clone(), owner);
+
+        let cleanups = Rc::new(Cell::new(0u32));
+        let cl = cleanups.clone();
+        let sig = cx.state(1);
+        cx.effect_cleanup(move || {
+            let _v = sig.get();
+            let cl_inner = cl.clone();
+            Some(Box::new(move || cl_inner.set(cl_inner.get() + 1)))
+        });
+        rt.flush_effects();
+        assert_eq!(cleanups.get(), 0);
+
+        rt.enter(|| sig.set(2));
+        rt.flush_reactive();
+        rt.flush_effects();
+        assert_eq!(cleanups.get(), 1);
+
+        let ticks = Rc::new(Cell::new(0u32));
+        let t_c = ticks.clone();
+        cx.timer(std::time::Duration::from_millis(5), true, move || {
+            t_c.set(t_c.get() + 1);
+        });
+        rt.tick_timers(Instant::now() + std::time::Duration::from_millis(20));
+        assert_eq!(ticks.get(), 1);
+
+        let res = cx.resource(|| Ok::<i32, String>(77));
+        for _ in 0..100 {
+            if rt.poll_tasks() > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        rt.enter(|| assert_eq!(res.ready(), Some(77)));
+
+        rt.remove_node(owner);
+        assert_eq!(cleanups.get(), 2, "disposal must run final effect cleanup");
+        assert_eq!(rt.timer_count(), 0);
     }
 }

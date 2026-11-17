@@ -11,10 +11,13 @@ use crate::node::{
     DirtyFlags, DynamicNodeData, ForEachRebuilderFn, HookSlot, Node, NodeAnimation, NodeBuilderFn,
     NodeId, NodeKind, SwitchBuilderFn,
 };
-use crate::signal::{Binding, EffectHandle, Memo, Runtime, State};
+use crate::signal::{
+    AsyncExecutor, Binding, EffectHandle, Memo, ObservableModel, Resource, Runtime, State, TimerId,
+};
 use crate::types::{
-    AccessibilityRole, Animation, Color, ContentMode, CornerRadii, DragEvent, Edge, Frame,
-    IntoEdges, IntoPx, KeyEvent, PinchEvent, Point, ScrollEvent, Transition,
+    AccessibilityLive, AccessibilityRole, Animation, Color, ContentMode, CornerRadii, DragEvent,
+    DragPayload, DropEvent, Edge, Frame, IntoEdges, IntoPx, KeyEvent, PinchEvent, Point, Rect,
+    ScrollEvent, Size, Transition,
 };
 
 /// Context passed to composite [`View::body`] implementations.
@@ -97,9 +100,41 @@ impl Cx {
         self.runtime.create_memo(f, Some(self.node_id))
     }
 
+    /// Instantiates a reactive observable model (`#[derive(Observable)]`) scoped to this node's lifetime.
+    pub fn model<M: ObservableModel>(&mut self, model: M) -> M::Handle {
+        model.into_model(&self.runtime, Some(self.node_id))
+    }
+
     /// Registers a post-layout side effect scoped to this node's lifetime.
     pub fn effect(&mut self, f: impl FnMut() + 'static) -> EffectHandle {
         self.runtime.create_effect(f, Some(self.node_id))
+    }
+
+    /// Registers a post-layout effect returning a cleanup closure run before re-execution and disposal.
+    pub fn effect_cleanup(
+        &mut self,
+        f: impl FnMut() -> Option<Box<dyn FnOnce()>> + 'static,
+    ) -> EffectHandle {
+        self.runtime.create_effect_cleanup(f, Some(self.node_id))
+    }
+
+    /// Schedules a managed one-shot or repeating timer disposed automatically with this node.
+    pub fn timer(
+        &mut self,
+        duration: std::time::Duration,
+        repeating: bool,
+        callback: impl Fn() + 'static,
+    ) -> TimerId {
+        self.runtime
+            .create_timer(duration, repeating, callback, Some(self.node_id))
+    }
+
+    /// Fetches a background [`Resource<T>`] with reactive `Loading`/`Ready`/`Error` states.
+    pub fn resource<T: Clone + Send + 'static>(
+        &mut self,
+        fetcher: impl Fn() -> Result<T, String> + Send + Sync + 'static,
+    ) -> Resource<T> {
+        self.runtime.create_resource(fetcher, Some(self.node_id))
     }
 
     /// Reads an inherited environment value set by an ancestor `.environment(...)` modifier.
@@ -130,6 +165,16 @@ impl Cx {
         on_complete: impl FnOnce(R) + 'static,
     ) {
         self.runtime.spawn(work, on_complete);
+    }
+
+    /// Runs an async future on a user-supplied [`AsyncExecutor`], delivering the result to the UI thread.
+    pub fn spawn_future<E, F, R>(&self, executor: &E, fut: F, on_complete: impl FnOnce(R) + 'static)
+    where
+        E: AsyncExecutor,
+        F: std::future::Future<Output = R> + Send + 'static,
+        R: Send + 'static,
+    {
+        self.runtime.spawn_future(executor, fut, on_complete);
     }
 
     /// Returns a reference to the underlying [`Runtime`].
@@ -667,6 +712,65 @@ fn inherit_child_corner_radii(
     }
 }
 
+fn propagate_accessibility_down(inner: &mut crate::signal::RuntimeInner, wrapper: NodeId) {
+    let (hint, live, sort_prio, action_names, action_map, first_child) = {
+        let Some(w) = inner.nodes.get_mut(wrapper) else {
+            return;
+        };
+        if w.accessibility.combine_children {
+            return;
+        }
+        let hint = w.accessibility.hint.take();
+        let live = std::mem::take(&mut w.accessibility.live);
+        let sort_prio = std::mem::take(&mut w.accessibility.sort_priority);
+        let action_names = std::mem::take(&mut w.accessibility.custom_action_names);
+        let action_map = std::mem::take(&mut w.events.custom_actions);
+        let child = w.children.first().copied();
+        (hint, live, sort_prio, action_names, action_map, child)
+    };
+    if hint.is_none()
+        && live == AccessibilityLive::Off
+        && sort_prio == 0.0
+        && action_names.is_empty()
+    {
+        return;
+    }
+    let mut cur = first_child;
+    while let Some(cid) = cur {
+        let next = inner.nodes.get(cid).and_then(|n| {
+            if matches!(n.kind, NodeKind::Modifier) {
+                n.children.first().copied()
+            } else {
+                None
+            }
+        });
+        if next.is_some() {
+            cur = next;
+        } else {
+            if let Some(target) = inner.nodes.get_mut(cid) {
+                if hint.is_some() {
+                    target.accessibility.hint = hint;
+                }
+                if live != AccessibilityLive::Off {
+                    target.accessibility.live = live;
+                }
+                if sort_prio != 0.0 {
+                    target.accessibility.sort_priority = sort_prio;
+                }
+                for name in action_names {
+                    if !target.accessibility.custom_action_names.contains(&name) {
+                        target.accessibility.custom_action_names.push(name);
+                    }
+                }
+                for (k, v) in action_map {
+                    target.events.custom_actions.insert(k, v);
+                }
+            }
+            break;
+        }
+    }
+}
+
 fn build_modifier_wrapper<V: View>(
     inner: V,
     cx: &mut BuildCx,
@@ -692,6 +796,7 @@ fn build_modifier_wrapper<V: View>(
         } else {
             inherit_child_corner_radii(rt_inner, wrapper, child_id);
         }
+        propagate_accessibility_down(rt_inner, wrapper);
     });
     wrapper
 }
@@ -1134,6 +1239,88 @@ pub trait ViewExt: View + Sized {
     fn accessibility_hidden(self, hidden: bool) -> Modified<Self> {
         Modified::new(self, move |n, _, _| {
             n.accessibility.hidden = hidden;
+        })
+    }
+
+    fn accessibility_hint(self, hint: impl Into<String>) -> Modified<Self> {
+        let hint = hint.into();
+        Modified::new(self, move |n, _, _| {
+            n.accessibility.hint = Some(hint);
+        })
+    }
+
+    fn accessibility_live(self, live: AccessibilityLive) -> Modified<Self> {
+        Modified::new(self, move |n, _, _| {
+            n.accessibility.live = live;
+        })
+    }
+
+    fn accessibility_sort_priority(self, priority: f32) -> Modified<Self> {
+        Modified::new(self, move |n, _, _| {
+            n.accessibility.sort_priority = priority;
+        })
+    }
+
+    fn accessibility_custom_action(
+        self,
+        name: impl Into<String>,
+        handler: impl Fn() + 'static,
+    ) -> Modified<Self> {
+        let name = name.into();
+        let handler = Rc::new(handler);
+        Modified::new(self, move |n, _, _| {
+            if !n.accessibility.custom_action_names.contains(&name) {
+                n.accessibility.custom_action_names.push(name.clone());
+            }
+            n.events.custom_actions.insert(name, handler);
+        })
+    }
+
+    fn accessibility_element_combine(self) -> Modified<Self> {
+        Modified::new(self, move |n, _, _| {
+            n.accessibility.combine_children = true;
+        })
+    }
+
+    fn on_size_change(self, f: impl Fn(Size<f32>) + 'static) -> Modified<Self> {
+        let f = Rc::new(f);
+        Modified::new(self, move |n, _, _| {
+            n.events.on_size_change = Some(f);
+        })
+    }
+
+    fn on_geometry(self, f: impl Fn(Rect) + 'static) -> Modified<Self> {
+        let f = Rc::new(f);
+        Modified::new(self, move |n, _, _| {
+            n.events.on_geometry = Some(f);
+        })
+    }
+
+    fn grid_cell_columns(self, span: usize) -> Modified<Self> {
+        let span = span.max(1);
+        Modified::new(self, move |n, _, _| {
+            n.layout_props.grid_column_span = span;
+        })
+    }
+
+    fn grid_cell_rows(self, span: usize) -> Modified<Self> {
+        let span = span.max(1);
+        Modified::new(self, move |n, _, _| {
+            n.layout_props.grid_row_span = span;
+        })
+    }
+
+    fn draggable(self, payload: impl Fn() -> DragPayload + 'static) -> Modified<Self> {
+        let payload = Rc::new(payload);
+        Modified::new(self, move |n, _, _| {
+            n.events.on_drag_payload = Some(payload);
+        })
+    }
+
+    fn on_drop(self, f: impl Fn(DropEvent) -> bool + 'static) -> Modified<Self> {
+        let f = Rc::new(f);
+        Modified::new(self, move |n, _, _| {
+            n.events.on_drop = Some(f);
         })
     }
 
