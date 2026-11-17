@@ -21,7 +21,7 @@ pub use types::{
     AccessibilityRole, Alignment, Animation, BoxShadow, Color, ContentMode, CornerRadii, DragEvent,
     Edge, Edges, Frame, HorizontalAlignment, IntoEdges, IntoPx, KeyCode, KeyEvent, Modifiers,
     PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Rect, ScrollEvent, SemanticColor,
-    Size, TextDirection, Transition, VerticalAlignment,
+    Size, TextDirection, ThemePalette, Transition, VerticalAlignment,
 };
 pub use view::{
     AnyView, Background, BuildCx, Cx, EmptyView, ForEach, Framed, If, IntoTextSource, Modified,

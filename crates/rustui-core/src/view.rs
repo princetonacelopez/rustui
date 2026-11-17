@@ -943,9 +943,29 @@ pub trait ViewExt: View + Sized {
     }
 
     fn environment<T: Clone + 'static>(self, value: T) -> Modified<Self> {
-        Modified::new(self, move |n, _, _| {
-            n.env.insert(value);
-        })
+        let value_post = value.clone();
+        Modified::with_post_build(
+            self,
+            move |n, _, _| {
+                n.env.insert(value);
+            },
+            move |rt, node| {
+                rt.inherit_environment(node, value_post);
+            },
+        )
+    }
+
+    fn environment_reactive<T: Clone + 'static>(
+        self,
+        f: impl Fn() -> T + 'static,
+    ) -> Modified<Self> {
+        Modified::with_post_build(
+            self,
+            |_, _, _| {},
+            move |rt, node| {
+                rt.register_env_updater(node, f);
+            },
+        )
     }
 
     fn id<K: Hash>(self, key: K) -> Modified<Self> {

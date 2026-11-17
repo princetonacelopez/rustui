@@ -6,8 +6,8 @@ use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
 use rustui_core::{Color, CornerRadii, Point, Rect};
-use vello::kurbo::{Affine, BezPath, Point as KPoint, Stroke};
-use vello::peniko::{Brush, Color as VColor, Fill};
+use vello::kurbo::{Affine, BezPath, Point as KPoint, Rect as KRect, Stroke};
+use vello::peniko::{Blob, Brush, Color as VColor, Fill, FontData, Mix};
 
 use crate::atlas::GlyphAtlas;
 use crate::display_list::{
@@ -133,6 +133,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     } else {
         let sample = textureSample(sprite_tex, tex_sampler, in.uv);
+        if (in.params.y > 0.5) {
+            if (sample.a <= 0.0001) {
+                return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            }
+            let unpremul = clamp(sample.rgb / sample.a, vec3<f32>(0.0), vec3<f32>(1.0));
+            return vec4<f32>(unpremul * in.color.rgb, sample.a * in.color.a * opacity);
+        }
         return vec4<f32>(sample.rgb * in.color.rgb, sample.a * in.color.a * opacity);
     }
 }
@@ -791,6 +798,7 @@ fn render_with_gpu(
     let mut opacity_stack: Vec<f32> = vec![1.0];
     let mut vello_scene = vello::Scene::new();
     let mut has_vello_paths = false;
+    let mut colr_font_cache: HashMap<u64, Option<FontData>> = HashMap::new();
 
     let push_inst = |instances: &mut Vec<SdfInstance>,
                      batches: &mut Vec<DrawBatch>,
@@ -1024,30 +1032,81 @@ fn render_with_gpu(
             }
             DisplayCommand::DrawGlyphRun { glyphs, color } => {
                 for g in glyphs {
-                    let Some(entry) = atlas.get(&g.key).copied() else {
-                        continue;
-                    };
-                    if entry.width == 0 || entry.height == 0 {
+                    let entry = atlas.get(&g.key).copied();
+                    if let Some(entry) = entry
+                        && entry.width > 0
+                        && entry.height > 0
+                    {
+                        let x = g.position.x * scale + entry.bearing_x as f32;
+                        let y = g.position.y * scale - entry.bearing_y as f32;
+                        let gc = if g.color.a > 0.0 { g.color } else { *color };
+                        push_inst(
+                            &mut instances,
+                            &mut batches,
+                            DrawBatchKind::Atlas,
+                            scissor,
+                            SdfInstance {
+                                rect: [x, y, entry.width as f32, entry.height as f32],
+                                radii: [0.0; 4],
+                                color: [gc.r, gc.g, gc.b, gc.a],
+                                color2: [0.0; 4],
+                                uv_rect: [entry.uv.x, entry.uv.y, entry.uv.width, entry.uv.height],
+                                params: [5.0, if entry.is_color { 1.0 } else { 0.0 }, 0.0, 0.0],
+                                params2: [0.0, 0.0, current_opacity, 0.0],
+                            },
+                        );
                         continue;
                     }
-                    let x = g.position.x * scale + entry.bearing_x as f32;
-                    let y = g.position.y * scale - entry.bearing_y as f32;
-                    let gc = if g.color.a > 0.0 { g.color } else { *color };
-                    push_inst(
-                        &mut instances,
-                        &mut batches,
-                        DrawBatchKind::Atlas,
-                        scissor,
-                        SdfInstance {
-                            rect: [x, y, entry.width as f32, entry.height as f32],
-                            radii: [0.0; 4],
-                            color: [gc.r, gc.g, gc.b, gc.a],
-                            color2: [0.0; 4],
-                            uv_rect: [entry.uv.x, entry.uv.y, entry.uv.width, entry.uv.height],
-                            params: [5.0, if entry.is_color { 1.0 } else { 0.0 }, 0.0, 0.0],
-                            params2: [0.0, 0.0, current_opacity, 0.0],
-                        },
-                    );
+                    let font_data = colr_font_cache.entry(g.key.font_id).or_insert_with(|| {
+                        let blob = list.fonts.get(&g.key.font_id)?;
+                        if sfnt_has_colr(&blob.bytes, blob.index) {
+                            Some(FontData::new(Blob::new(blob.bytes.clone()), blob.index))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(font_data) = font_data {
+                        if scissor[2] == 0 || scissor[3] == 0 {
+                            continue;
+                        }
+                        has_vello_paths = true;
+                        let clip_rect = KRect::new(
+                            f64::from(scissor[0]),
+                            f64::from(scissor[1]),
+                            f64::from(scissor[0].saturating_add(scissor[2])),
+                            f64::from(scissor[1].saturating_add(scissor[3])),
+                        );
+                        if current_opacity < 0.999 {
+                            vello_scene.push_layer(
+                                Fill::NonZero,
+                                Mix::Normal,
+                                current_opacity,
+                                Affine::IDENTITY,
+                                &clip_rect,
+                            );
+                        } else {
+                            vello_scene.push_clip_layer(
+                                Fill::NonZero,
+                                Affine::IDENTITY,
+                                &clip_rect,
+                            );
+                        }
+                        let size_px = (g.key.size_q4 as f32 / 16.0).max(1.0);
+                        let gc = if g.color.a > 0.0 { g.color } else { *color };
+                        vello_scene
+                            .draw_glyphs(font_data)
+                            .font_size(size_px)
+                            .brush(VColor::new([gc.r, gc.g, gc.b, gc.a]))
+                            .draw(
+                                Fill::NonZero,
+                                std::iter::once(vello::Glyph {
+                                    id: u32::from(g.key.glyph_id),
+                                    x: g.position.x * scale,
+                                    y: g.position.y * scale,
+                                }),
+                            );
+                        vello_scene.pop_layer();
+                    }
                 }
             }
             DisplayCommand::DrawImage {
@@ -1249,7 +1308,7 @@ fn render_with_gpu(
                 color: [1.0, 1.0, 1.0, 1.0],
                 color2: [0.0; 4],
                 uv_rect: [0.0, 0.0, 1.0, 1.0],
-                params: [6.0, 0.0, 0.0, 0.0],
+                params: [6.0, 1.0, 0.0, 0.0],
                 params2: [0.0, 0.0, 1.0, 0.0],
             });
             batches.push(DrawBatch {
@@ -2043,4 +2102,48 @@ pub fn encode_rgba_to_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8
 
 pub fn register_font_if_missing(list: &mut DisplayList, blob: FontBlob) {
     list.register_font(blob);
+}
+
+fn sfnt_has_colr(bytes: &[u8], font_index: u32) -> bool {
+    let sfnt_offset = if bytes.get(0..4) == Some(b"ttcf") {
+        let Some(num_fonts) = bytes
+            .get(8..12)
+            .and_then(|s| s.try_into().ok())
+            .map(u32::from_be_bytes)
+        else {
+            return false;
+        };
+        if font_index >= num_fonts {
+            return false;
+        }
+        let off_pos = 12usize.saturating_add((font_index as usize).saturating_mul(4));
+        let Some(off) = bytes
+            .get(off_pos..off_pos.saturating_add(4))
+            .and_then(|s| s.try_into().ok())
+            .map(u32::from_be_bytes)
+        else {
+            return false;
+        };
+        off as usize
+    } else {
+        0
+    };
+    let Some(num_tables) = bytes
+        .get(sfnt_offset.saturating_add(4)..sfnt_offset.saturating_add(6))
+        .and_then(|s| s.try_into().ok())
+        .map(u16::from_be_bytes)
+    else {
+        return false;
+    };
+    let table_dir = sfnt_offset.saturating_add(12);
+    for i in 0..usize::from(num_tables) {
+        let rec = table_dir.saturating_add(i.saturating_mul(16));
+        let Some(tag) = bytes.get(rec..rec.saturating_add(4)) else {
+            break;
+        };
+        if tag == b"COLR" {
+            return true;
+        }
+    }
+    false
 }

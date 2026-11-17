@@ -404,6 +404,83 @@ pub enum SemanticColor {
     Warning,
 }
 
+/// Resolved color palette stored in node environments for dynamic semantic color lookup.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThemePalette {
+    pub is_dark: bool,
+    pub primary: Color,
+    pub secondary: Color,
+    pub background: Color,
+    pub surface: Color,
+    pub surface_elevated: Color,
+    pub accent: Color,
+    pub on_accent: Color,
+    pub border: Color,
+    pub destructive: Color,
+    pub success: Color,
+    pub warning: Color,
+}
+
+impl Default for ThemePalette {
+    fn default() -> Self {
+        Self::light()
+    }
+}
+
+impl ThemePalette {
+    pub fn light() -> Self {
+        Self {
+            is_dark: false,
+            primary: Color::from_hex(0x0f172a),
+            secondary: Color::from_hex(0x475569),
+            background: Color::from_hex(0xf8fafc),
+            surface: Color::from_hex(0xf1f5f9),
+            surface_elevated: Color::WHITE,
+            accent: Color::from_hex(0x2563eb),
+            on_accent: Color::WHITE,
+            border: Color::from_hex(0xcbd5e1),
+            destructive: Color::from_hex(0xdc2626),
+            success: Color::from_hex(0x16a34a),
+            warning: Color::from_hex(0xd97706),
+        }
+    }
+
+    pub fn dark() -> Self {
+        Self {
+            is_dark: true,
+            primary: Color::from_hex(0xf8fafc),
+            secondary: Color::from_hex(0x94a3b8),
+            background: Color::from_hex(0x0f172a),
+            surface: Color::from_hex(0x1e293b),
+            surface_elevated: Color::from_hex(0x334155),
+            accent: Color::from_hex(0x3b82f6),
+            on_accent: Color::WHITE,
+            border: Color::from_hex(0x475569),
+            destructive: Color::from_hex(0xef4444),
+            success: Color::from_hex(0x22c55e),
+            warning: Color::from_hex(0xf59e0b),
+        }
+    }
+
+    /// Resolves a semantic [`Color`] using this palette while preserving its alpha channel.
+    #[inline]
+    pub fn resolve(&self, color: Color) -> Color {
+        match color.semantic {
+            None => color,
+            Some(SemanticColor::Primary) => self.primary.with_alpha(color.a),
+            Some(SemanticColor::Secondary) => self.secondary.with_alpha(color.a),
+            Some(SemanticColor::Background) => self.background.with_alpha(color.a),
+            Some(SemanticColor::Surface) => self.surface.with_alpha(color.a),
+            Some(SemanticColor::SurfaceElevated) => self.surface_elevated.with_alpha(color.a),
+            Some(SemanticColor::Accent) => self.accent.with_alpha(color.a),
+            Some(SemanticColor::Border) => self.border.with_alpha(color.a),
+            Some(SemanticColor::Destructive) => self.destructive.with_alpha(color.a),
+            Some(SemanticColor::Success) => self.success.with_alpha(color.a),
+            Some(SemanticColor::Warning) => self.warning.with_alpha(color.a),
+        }
+    }
+}
+
 impl Default for Color {
     fn default() -> Self {
         Self::TRANSPARENT

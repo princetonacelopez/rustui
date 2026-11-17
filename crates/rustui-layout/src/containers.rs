@@ -90,9 +90,13 @@ fn solve_stack(
             let mut remaining = (total_main - total_spacing).max(0.0);
             let mut min_sum_remaining: f32 = entries.iter().map(|e| e.3).sum();
 
-            for (pos, &(idx, _, _, min_s)) in entries.iter().enumerate() {
+            for (pos, &(idx, prio, _, min_s)) in entries.iter().enumerate() {
                 min_sum_remaining = (min_sum_remaining - min_s).max(0.0);
-                let rem_count = (n - pos) as f32;
+                let rem_count = entries[pos..]
+                    .iter()
+                    .take_while(|e| (e.1 - prio).abs() < 1e-6)
+                    .count()
+                    .max(1) as f32;
                 let max_for_this = (remaining - min_sum_remaining).max(min_s);
                 let fair_share = (remaining / rem_count).max(min_s).min(max_for_this);
                 let measured = children
@@ -237,9 +241,13 @@ pub struct ZStackLayout {
 
 impl Layout for ZStackLayout {
     fn size(&self, proposed: Size<Option<f32>>, children: &mut Children<'_>) -> Size<f32> {
+        let len = children.len();
         let mut max_w = 0.0f32;
         let mut max_h = 0.0f32;
-        for i in 0..children.len() {
+        for i in 0..len {
+            if len > 1 && children.child(i).is_popover_overlay() {
+                continue;
+            }
             let sz = children.child(i).size(proposed);
             max_w = max_w.max(sz.width);
             max_h = max_h.max(sz.height);
@@ -249,19 +257,29 @@ impl Layout for ZStackLayout {
 
     fn place(&self, bounds: Rect, children: &mut Children<'_>) {
         let dir = children.direction();
+        let viewport_w = children.viewport().width;
         let child_prop = Size::new(Some(bounds.width), Some(bounds.height));
         for i in 0..children.len() {
+            let is_overlay = children.child(i).is_popover_overlay();
+            let prop_for_child = if is_overlay {
+                Size::UNSPECIFIED
+            } else {
+                child_prop
+            };
             let (sz, gx, gy) = {
                 let mut c = children.child(i);
-                let sz = c.size(child_prop);
+                let sz = c.size(prop_for_child);
                 let (gx, gy) = c.alignment_guides();
                 (sz, gx, gy)
             };
             let ax = gx.unwrap_or_else(|| self.alignment.horizontal.factor(dir));
             let ay = gy.unwrap_or_else(|| self.alignment.vertical.factor());
-            let x = bounds.x + (bounds.width - sz.width) * ax;
+            let mut x = bounds.x + (bounds.width - sz.width) * ax;
             let y = bounds.y + (bounds.height - sz.height) * ay;
-            children.child(i).place(Point::new(x, y), child_prop);
+            if is_overlay && viewport_w > 0.0 && x + sz.width > viewport_w - 8.0 {
+                x = (bounds.max_x() - sz.width).max(8.0);
+            }
+            children.child(i).place(Point::new(x, y), prop_for_child);
         }
     }
 }
@@ -531,10 +549,11 @@ impl Layout for LazyVStackLayout {
             max_w = max_w.max(sz.width);
         }
 
-        let height = proposed
-            .height
-            .filter(|h| h.is_finite())
-            .unwrap_or_else(|| self.total_content_height());
+        let height = match proposed.height {
+            Some(h) if h.is_infinite() => self.total_content_height().max(10_000.0),
+            Some(h) => h,
+            None => self.total_content_height(),
+        };
         Size::new(max_w, height)
     }
 
@@ -548,6 +567,9 @@ impl Layout for LazyVStackLayout {
             let row_idx = start + i;
             let y = bounds.y + row_idx as f32 * pitch - self.scroll_offset;
             children.child(i).place(Point::new(bounds.x, y), row_prop);
+        }
+        for i in visible_count..children.len() {
+            children.child(i).reset_bounds();
         }
     }
 }

@@ -379,14 +379,32 @@ impl TextSystem {
         builder.push_default(StyleProperty::Strikethrough(data.strikethrough));
 
         if let Some(fam) = &data.font.family {
-            builder.push_default(StyleProperty::FontFamily(FontFamily::named(fam.as_str())));
+            builder.push_default(StyleProperty::FontFamily(FontFamily::List(
+                std::borrow::Cow::Owned(vec![
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed(fam.as_str())),
+                    FontFamilyName::Generic(GenericFamily::SansSerif),
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed("Noto Emoji")),
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed("Symbola")),
+                    FontFamilyName::Generic(GenericFamily::Emoji),
+                ]),
+            )));
         } else if data.font.monospace {
-            builder.push_default(StyleProperty::FontFamily(FontFamily::Single(
-                FontFamilyName::Generic(GenericFamily::Monospace),
+            builder.push_default(StyleProperty::FontFamily(FontFamily::List(
+                std::borrow::Cow::Borrowed(&[
+                    FontFamilyName::Generic(GenericFamily::Monospace),
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed("Noto Emoji")),
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed("Symbola")),
+                    FontFamilyName::Generic(GenericFamily::Emoji),
+                ]),
             )));
         } else {
-            builder.push_default(StyleProperty::FontFamily(FontFamily::Single(
-                FontFamilyName::Generic(GenericFamily::SansSerif),
+            builder.push_default(StyleProperty::FontFamily(FontFamily::List(
+                std::borrow::Cow::Borrowed(&[
+                    FontFamilyName::Generic(GenericFamily::SansSerif),
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed("Noto Emoji")),
+                    FontFamilyName::Named(std::borrow::Cow::Borrowed("Symbola")),
+                    FontFamilyName::Generic(GenericFamily::Emoji),
+                ]),
             )));
         }
 
@@ -570,9 +588,12 @@ pub struct ParleyTextPainter<'a> {
 
 impl TextPainter for ParleyTextPainter<'_> {
     fn paint_text(&mut self, data: &TextNodeData, bounds: Rect, list: &mut DisplayList) {
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
         let shaped = self
             .system
-            .shape_node_data(data, Some(bounds.width), self.scale_factor);
+            .shape_node_data(data, Some(bounds.width + 1.0), self.scale_factor);
         let default_color = data.color.unwrap_or(Color::BLACK);
 
         // Draw selection background highlight if present.

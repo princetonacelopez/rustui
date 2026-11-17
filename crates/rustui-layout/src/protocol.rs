@@ -9,8 +9,7 @@ use rustui_core::{
 };
 
 use crate::containers::{
-    GridLayout, HStackLayout, LazyVStackLayout, ScrollViewLayout, SpacerLayout, VStackLayout,
-    ZStackLayout,
+    GridLayout, HStackLayout, LazyVStackLayout, SpacerLayout, VStackLayout, ZStackLayout,
 };
 
 /// Interface implemented by text engines (such as `rustui-text`'s `ParleyTextMeasurer`)
@@ -188,6 +187,27 @@ impl ChildProxy<'_> {
         })
     }
 
+    /// Returns true if this child represents a floating popover/menu overlay.
+    pub fn is_popover_overlay(&self) -> bool {
+        self.engine.runtime().with_inner(|inner| {
+            inner
+                .nodes
+                .get(self.node_id)
+                .is_some_and(|n| n.accessibility.role == rustui_core::AccessibilityRole::Popover)
+        })
+    }
+
+    /// Resets this child's cached bounds to empty (used for offscreen pooled virtual list items).
+    pub fn reset_bounds(&self) {
+        self.engine.runtime().with_inner_mut(|inner| {
+            if let Some(n) = inner.nodes.get_mut(self.node_id) {
+                n.layout_cache.bounds = Rect::ZERO;
+                n.dirty
+                    .remove(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT);
+            }
+        });
+    }
+
     /// Returns the child's effective [`TextDirection`].
     pub fn direction(&self) -> TextDirection {
         self.engine.direction()
@@ -198,6 +218,7 @@ impl ChildProxy<'_> {
 pub struct Children<'a> {
     pub(crate) ids: Vec<NodeId>,
     pub(crate) direction: TextDirection,
+    pub(crate) viewport: Size<f32>,
     pub(crate) engine: &'a mut dyn LayoutOps,
 }
 
@@ -221,6 +242,11 @@ impl<'a> Children<'a> {
 
     pub fn direction(&self) -> TextDirection {
         self.direction
+    }
+
+    /// Returns the root viewport logical size.
+    pub fn viewport(&self) -> Size<f32> {
+        self.viewport
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<ChildProxy<'_>> {
@@ -255,6 +281,7 @@ fn effective_priority(inner: &RuntimeInner, node_id: NodeId) -> f64 {
             return node.layout_props.layout_priority;
         }
         match node.kind {
+            NodeKind::Container(ContainerKind::Spacer { .. }) => return -1.0,
             NodeKind::Modifier | NodeKind::Composite => {
                 cursor = node.children.first().copied();
             }
@@ -279,12 +306,7 @@ fn collect_flattened_children(inner: &RuntimeInner, parent_id: NodeId, out: &mut
         let is_transparent = matches!(
             &c.kind,
             NodeKind::Dynamic(_) | NodeKind::Container(ContainerKind::Fragment)
-        ) || (matches!(c.kind, NodeKind::Composite)
-            && c.layout_props.padding == rustui_core::Edges::ZERO
-            && c.layout_props.frame.is_none()
-            && !c.layout_props.fixed_horizontal
-            && !c.layout_props.fixed_vertical
-            && c.layout_props.aspect_ratio.is_none());
+        );
 
         if is_transparent {
             collect_flattened_children(inner, cid, out);
@@ -294,10 +316,32 @@ fn collect_flattened_children(inner: &RuntimeInner, parent_id: NodeId, out: &mut
     }
 }
 
+fn enclosing_stack_axis(inner: &RuntimeInner, node_id: NodeId) -> Option<bool> {
+    let mut cursor = inner.nodes.get(node_id).and_then(|n| n.parent);
+    while let Some(id) = cursor {
+        let Some(n) = inner.nodes.get(id) else {
+            break;
+        };
+        match &n.kind {
+            NodeKind::Container(ContainerKind::HStack { .. }) => return Some(true),
+            NodeKind::Container(ContainerKind::VStack { .. }) => return Some(false),
+            NodeKind::Modifier
+            | NodeKind::Composite
+            | NodeKind::Dynamic(_)
+            | NodeKind::Container(ContainerKind::Fragment) => {
+                cursor = n.parent;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 pub(crate) struct LayoutContext<'a> {
     pub(crate) runtime: &'a Runtime,
     pub(crate) measurer: &'a mut dyn TextMeasurer,
     pub(crate) direction: TextDirection,
+    pub(crate) viewport: Size<f32>,
     pub(crate) laid_out_count: usize,
 }
 
@@ -341,23 +385,55 @@ impl<'a> LayoutContext<'a> {
 
         enum NodeLayoutAction {
             Hidden,
-            Modifier {
+            SingleChild {
                 props: rustui_core::LayoutProps,
                 child: Option<NodeId>,
             },
-            Composite {
+            Control {
+                kind: &'static str,
                 props: rustui_core::LayoutProps,
                 child: Option<NodeId>,
+                clip_to_bounds: bool,
             },
-            Text(TextNodeData),
-            Image(Size<f32>),
-            Container(ContainerKind, Vec<NodeId>),
-            Custom(Rc<dyn Layout>, Vec<NodeId>),
-            Scroll(rustui_core::ScrollAxes, Option<NodeId>),
-            VirtualList(rustui_core::VirtualListNodeData),
-            Spacer(f32),
-            Divider(f32),
-            LeafPreferred(Size<f32>),
+            Text {
+                props: rustui_core::LayoutProps,
+                data: TextNodeData,
+            },
+            Image {
+                props: rustui_core::LayoutProps,
+                intrinsic: Size<f32>,
+            },
+            Container {
+                props: rustui_core::LayoutProps,
+                kind: ContainerKind,
+                children: Vec<NodeId>,
+            },
+            Custom {
+                props: rustui_core::LayoutProps,
+                layout: Rc<dyn Layout>,
+                children: Vec<NodeId>,
+            },
+            Scroll {
+                props: rustui_core::LayoutProps,
+                axes: rustui_core::ScrollAxes,
+                child: Option<NodeId>,
+            },
+            VirtualList {
+                props: rustui_core::LayoutProps,
+                data: rustui_core::VirtualListNodeData,
+            },
+            Spacer {
+                props: rustui_core::LayoutProps,
+                min_length: f32,
+                stack_axis: Option<bool>,
+            },
+            Divider {
+                props: rustui_core::LayoutProps,
+                thickness: f32,
+            },
+            CanvasOrShader {
+                props: rustui_core::LayoutProps,
+            },
         }
 
         let action = self.runtime.with_inner(|inner| {
@@ -367,16 +443,16 @@ impl<'a> LayoutContext<'a> {
             if n.visual_props.hidden {
                 return NodeLayoutAction::Hidden;
             }
+            let props = n.layout_props.clone();
             match &n.kind {
-                NodeKind::Modifier => NodeLayoutAction::Modifier {
-                    props: n.layout_props.clone(),
+                NodeKind::Modifier | NodeKind::Composite => NodeLayoutAction::SingleChild {
+                    props,
                     child: n.children.first().copied(),
                 },
-                NodeKind::Composite => NodeLayoutAction::Composite {
-                    props: n.layout_props.clone(),
-                    child: n.children.first().copied(),
+                NodeKind::Text(t) => NodeLayoutAction::Text {
+                    props,
+                    data: t.clone(),
                 },
-                NodeKind::Text(t) => NodeLayoutAction::Text(t.clone()),
                 NodeKind::Image(img) => {
                     let intrinsic = match &img.source {
                         rustui_core::ImageSourceData::Rgba { width, height, .. } => {
@@ -384,13 +460,20 @@ impl<'a> LayoutContext<'a> {
                         }
                         _ => Size::new(64.0, 64.0),
                     };
-                    NodeLayoutAction::Image(intrinsic)
+                    NodeLayoutAction::Image { props, intrinsic }
                 }
                 NodeKind::Container(ContainerKind::Spacer { min_length }) => {
-                    NodeLayoutAction::Spacer(*min_length)
+                    NodeLayoutAction::Spacer {
+                        props,
+                        min_length: *min_length,
+                        stack_axis: enclosing_stack_axis(inner, node_id),
+                    }
                 }
                 NodeKind::Container(ContainerKind::Divider { thickness, .. }) => {
-                    NodeLayoutAction::Divider(*thickness)
+                    NodeLayoutAction::Divider {
+                        props,
+                        thickness: *thickness,
+                    }
                 }
                 NodeKind::Container(ContainerKind::CustomLayout) => {
                     let custom = n
@@ -401,90 +484,165 @@ impl<'a> LayoutContext<'a> {
                     let mut kids = Vec::new();
                     collect_flattened_children(inner, node_id, &mut kids);
                     if let Some(l) = custom {
-                        NodeLayoutAction::Custom(l, kids)
+                        NodeLayoutAction::Custom {
+                            props,
+                            layout: l,
+                            children: kids,
+                        }
                     } else {
-                        NodeLayoutAction::Container(ContainerKind::Fragment, kids)
+                        NodeLayoutAction::Container {
+                            props,
+                            kind: ContainerKind::Fragment,
+                            children: kids,
+                        }
                     }
                 }
                 NodeKind::Container(ck) => {
                     let mut kids = Vec::new();
                     collect_flattened_children(inner, node_id, &mut kids);
-                    NodeLayoutAction::Container(ck.clone(), kids)
+                    NodeLayoutAction::Container {
+                        props,
+                        kind: ck.clone(),
+                        children: kids,
+                    }
                 }
                 NodeKind::Dynamic(_) => {
                     let mut kids = Vec::new();
                     collect_flattened_children(inner, node_id, &mut kids);
-                    NodeLayoutAction::Container(ContainerKind::Fragment, kids)
+                    NodeLayoutAction::Container {
+                        props,
+                        kind: ContainerKind::Fragment,
+                        children: kids,
+                    }
                 }
-                NodeKind::Scroll(s) => {
-                    NodeLayoutAction::Scroll(s.axes, n.children.first().copied())
-                }
-                NodeKind::VirtualList(vl) => NodeLayoutAction::VirtualList(vl.clone()),
+                NodeKind::Scroll(s) => NodeLayoutAction::Scroll {
+                    props,
+                    axes: s.axes,
+                    child: n.children.first().copied(),
+                },
+                NodeKind::VirtualList(vl) => NodeLayoutAction::VirtualList {
+                    props,
+                    data: vl.clone(),
+                },
                 NodeKind::Canvas(_) | NodeKind::Shader(_) => {
-                    let w = proposed.width.filter(|v| v.is_finite()).unwrap_or(200.0);
-                    let h = proposed.height.filter(|v| v.is_finite()).unwrap_or(150.0);
-                    NodeLayoutAction::LeafPreferred(Size::new(w, h))
+                    NodeLayoutAction::CanvasOrShader { props }
                 }
-                NodeKind::Control(ctrl) => {
-                    let default_size = match ctrl.kind {
-                        "checkbox" => Size::new(20.0, 20.0),
-                        "toggle" => Size::new(42.0, 24.0),
-                        "slider" => Size::new(160.0, 24.0),
-                        "textfield" => Size::new(200.0, 34.0),
-                        "texteditor" => Size::new(320.0, 140.0),
-                        _ => Size::new(80.0, 32.0),
-                    };
-                    let w = proposed
-                        .width
-                        .filter(|v| v.is_finite())
-                        .unwrap_or(default_size.width);
-                    let h = default_size.height;
-                    NodeLayoutAction::LeafPreferred(Size::new(w, h))
-                }
+                NodeKind::Control(ctrl) => NodeLayoutAction::Control {
+                    kind: ctrl.kind,
+                    props,
+                    child: n.children.first().copied(),
+                    clip_to_bounds: n.visual_props.clip_to_bounds,
+                },
             }
         });
 
         let measured = match action {
             NodeLayoutAction::Hidden => Size::ZERO,
-            NodeLayoutAction::Modifier { props, child }
-            | NodeLayoutAction::Composite { props, child } => {
-                self.measure_with_props(&props, child, proposed)
+            NodeLayoutAction::SingleChild { props, child } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let content_size = if let Some(cid) = child {
+                    self.measure_node(cid, inner_prop)
+                } else {
+                    Size::ZERO
+                };
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
-            NodeLayoutAction::Text(t) => self.measurer.measure_text(&t, proposed.width),
-            NodeLayoutAction::Image(intrinsic) => Size::new(
-                proposed
-                    .width
-                    .filter(|w| w.is_finite())
-                    .unwrap_or(intrinsic.width),
-                proposed
-                    .height
-                    .filter(|h| h.is_finite())
-                    .unwrap_or(intrinsic.height),
-            ),
-            NodeLayoutAction::Spacer(min_len) => SpacerLayout {
-                min_length: min_len,
+            NodeLayoutAction::Control {
+                kind,
+                props,
+                child,
+                clip_to_bounds,
+            } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let mut content_size = if let Some(cid) = child {
+                    self.measure_node(cid, inner_prop)
+                } else {
+                    let default_size = match kind {
+                        "checkbox" => Size::new(20.0, 20.0),
+                        "toggle" => Size::new(44.0, 24.0),
+                        "slider" => Size::new(160.0, 24.0),
+                        "textfield" => Size::new(200.0, 36.0),
+                        "securefield" => Size::new(200.0, 36.0),
+                        "texteditor" => Size::new(320.0, 140.0),
+                        _ => Size::new(80.0, 32.0),
+                    };
+                    let w = inner_prop
+                        .width
+                        .filter(|v| v.is_finite())
+                        .unwrap_or(default_size.width);
+                    Size::new(w, default_size.height)
+                };
+                if clip_to_bounds
+                    && proposed.width == Some(0.0)
+                    && matches!(kind, "textfield" | "securefield" | "texteditor")
+                {
+                    content_size.width = 0.0;
+                }
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
-            .measure(proposed),
-            NodeLayoutAction::Divider(thickness) => Size::new(
-                proposed.width.filter(|w| w.is_finite()).unwrap_or(120.0),
-                thickness,
-            ),
-            NodeLayoutAction::LeafPreferred(sz) => sz,
-            NodeLayoutAction::Scroll(axes, child) => {
-                let mut children_ids = child.into_iter().collect::<Vec<_>>();
-                let scroll_layout = ScrollViewLayout { axes };
-                let child_size = if let Some(&cid) = children_ids.first() {
+            NodeLayoutAction::Text { props, data } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let content_size = self.measurer.measure_text(&data, inner_prop.width);
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
+            }
+            NodeLayoutAction::Image { props, intrinsic } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let content_size = Size::new(
+                    inner_prop
+                        .width
+                        .filter(|w| w.is_finite())
+                        .unwrap_or(intrinsic.width),
+                    inner_prop
+                        .height
+                        .filter(|h| h.is_finite())
+                        .unwrap_or(intrinsic.height),
+                );
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
+            }
+            NodeLayoutAction::Spacer {
+                props,
+                min_length,
+                stack_axis,
+            } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let raw = SpacerLayout { min_length }.measure(inner_prop);
+                let content_size = match stack_axis {
+                    Some(true) => Size::new(raw.width, 0.0),
+                    Some(false) => Size::new(0.0, raw.height),
+                    None => raw,
+                };
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
+            }
+            NodeLayoutAction::Divider { props, thickness } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let content_size = Size::new(
+                    inner_prop.width.filter(|w| w.is_finite()).unwrap_or(120.0),
+                    thickness,
+                );
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
+            }
+            NodeLayoutAction::CanvasOrShader { props } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let content_size = Size::new(
+                    inner_prop.width.filter(|v| v.is_finite()).unwrap_or(200.0),
+                    inner_prop.height.filter(|v| v.is_finite()).unwrap_or(150.0),
+                );
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
+            }
+            NodeLayoutAction::Scroll { props, axes, child } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let child_size = if let Some(cid) = child {
                     let child_prop =
                         Size::new(
                             match axes {
                                 rustui_core::ScrollAxes::Horizontal
                                 | rustui_core::ScrollAxes::Both => None,
-                                rustui_core::ScrollAxes::Vertical => proposed.width,
+                                rustui_core::ScrollAxes::Vertical => inner_prop.width,
                             },
                             match axes {
                                 rustui_core::ScrollAxes::Vertical
                                 | rustui_core::ScrollAxes::Both => None,
-                                rustui_core::ScrollAxes::Horizontal => proposed.height,
+                                rustui_core::ScrollAxes::Horizontal => inner_prop.height,
                             },
                         );
                     self.measure_node(cid, child_prop)
@@ -498,19 +656,35 @@ impl<'a> LayoutContext<'a> {
                         s.content_size = child_size;
                     }
                 });
-                let _ = (&scroll_layout, &mut children_ids);
-                Size::new(
-                    proposed
-                        .width
-                        .filter(|w| w.is_finite())
-                        .unwrap_or(child_size.width),
-                    proposed
-                        .height
-                        .filter(|h| h.is_finite())
-                        .unwrap_or(child_size.height),
-                )
+                let resolve_axis = |prop: Option<f32>, content: f32, scrolls: bool| -> f32 {
+                    match prop {
+                        Some(v) if v.is_infinite() => {
+                            if scrolls {
+                                10_000.0_f32.max(content)
+                            } else {
+                                content
+                            }
+                        }
+                        Some(v) => v,
+                        None => content,
+                    }
+                };
+                let scrolls_h = matches!(
+                    axes,
+                    rustui_core::ScrollAxes::Horizontal | rustui_core::ScrollAxes::Both
+                );
+                let scrolls_v = matches!(
+                    axes,
+                    rustui_core::ScrollAxes::Vertical | rustui_core::ScrollAxes::Both
+                );
+                let content_size = Size::new(
+                    resolve_axis(inner_prop.width, child_size.width, scrolls_h),
+                    resolve_axis(inner_prop.height, child_size.height, scrolls_v),
+                );
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
-            NodeLayoutAction::VirtualList(vl) => {
+            NodeLayoutAction::VirtualList { props, data } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
                 let mut kids = self.runtime.with_inner(|inner| {
                     inner
                         .nodes
@@ -518,37 +692,52 @@ impl<'a> LayoutContext<'a> {
                         .map(|n| n.children.clone())
                         .unwrap_or_default()
                 });
-                let layout = LazyVStackLayout::from_data(&vl);
+                let layout = LazyVStackLayout::from_data(&data);
                 let mut children = Children {
                     ids: std::mem::take(&mut kids),
                     direction: dir,
+                    viewport: self.viewport,
                     engine: self,
                 };
-                layout.size(proposed, &mut children)
+                let content_size = layout.size(inner_prop, &mut children);
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
-            NodeLayoutAction::Custom(layout, kids) => {
+            NodeLayoutAction::Custom {
+                props,
+                layout,
+                children: kids,
+            } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
                 let mut children = Children {
                     ids: kids,
                     direction: dir,
+                    viewport: self.viewport,
                     engine: self,
                 };
-                layout.size(proposed, &mut children)
+                let content_size = layout.size(inner_prop, &mut children);
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
-            NodeLayoutAction::Container(ck, kids) => {
+            NodeLayoutAction::Container {
+                props,
+                kind: ck,
+                children: kids,
+            } => {
+                let inner_prop = Self::apply_props_to_proposal(&props, proposed);
                 let mut children = Children {
                     ids: kids,
                     direction: dir,
+                    viewport: self.viewport,
                     engine: self,
                 };
-                match ck {
+                let content_size = match ck {
                     ContainerKind::VStack { spacing, alignment } => {
-                        VStackLayout { spacing, alignment }.size(proposed, &mut children)
+                        VStackLayout { spacing, alignment }.size(inner_prop, &mut children)
                     }
                     ContainerKind::HStack { spacing, alignment } => {
-                        HStackLayout { spacing, alignment }.size(proposed, &mut children)
+                        HStackLayout { spacing, alignment }.size(inner_prop, &mut children)
                     }
                     ContainerKind::ZStack { alignment } => {
-                        ZStackLayout { alignment }.size(proposed, &mut children)
+                        ZStackLayout { alignment }.size(inner_prop, &mut children)
                     }
                     ContainerKind::Grid {
                         columns,
@@ -559,12 +748,12 @@ impl<'a> LayoutContext<'a> {
                         h_spacing,
                         v_spacing,
                     }
-                    .size(proposed, &mut children),
+                    .size(inner_prop, &mut children),
                     ContainerKind::Fragment => {
                         if children.is_empty() {
                             Size::ZERO
                         } else {
-                            let sizes = children.measure_all(proposed);
+                            let sizes = children.measure_all(inner_prop);
                             let mut w = 0.0f32;
                             let mut h = 0.0f32;
                             for s in sizes {
@@ -575,14 +764,15 @@ impl<'a> LayoutContext<'a> {
                         }
                     }
                     ContainerKind::Spacer { min_length } => {
-                        SpacerLayout { min_length }.size(proposed, &mut children)
+                        SpacerLayout { min_length }.size(inner_prop, &mut children)
                     }
                     ContainerKind::Divider { thickness, .. } => Size::new(
-                        proposed.width.filter(|w| w.is_finite()).unwrap_or(120.0),
+                        inner_prop.width.filter(|w| w.is_finite()).unwrap_or(120.0),
                         thickness,
                     ),
                     ContainerKind::CustomLayout => Size::ZERO,
-                }
+                };
+                Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
         };
 
@@ -595,116 +785,140 @@ impl<'a> LayoutContext<'a> {
         measured
     }
 
-    fn measure_with_props(
-        &mut self,
+    fn apply_props_to_proposal(
         props: &rustui_core::LayoutProps,
-        child: Option<NodeId>,
         proposed: Size<Option<f32>>,
-    ) -> Size<f32> {
-        let mut inner_prop = Size::new(
-            proposed
-                .width
-                .map(|w| (w - props.padding.horizontal()).max(0.0)),
-            proposed
-                .height
-                .map(|h| (h - props.padding.vertical()).max(0.0)),
-        );
+    ) -> Size<Option<f32>> {
+        let mut p = proposed;
 
         if props.fixed_horizontal {
-            inner_prop.width = None;
+            p.width = None;
         }
         if props.fixed_vertical {
-            inner_prop.height = None;
+            p.height = None;
         }
 
         if let Some(frame) = &props.frame {
-            if let Some(w) = frame.ideal_width.filter(|_| inner_prop.width.is_none()) {
-                inner_prop.width = Some(w);
+            if let Some(w) = frame.ideal_width.filter(|_| p.width.is_none()) {
+                p.width = Some(w);
             }
-            if let Some(h) = frame.ideal_height.filter(|_| inner_prop.height.is_none()) {
-                inner_prop.height = Some(h);
+            if let Some(h) = frame.ideal_height.filter(|_| p.height.is_none()) {
+                p.height = Some(h);
             }
             if let Some(max_w) = frame.max_width {
-                inner_prop.width = Some(inner_prop.width.map_or(max_w, |w| w.min(max_w)));
+                p.width = match (p.width, max_w.is_finite()) {
+                    (Some(w), true) => Some(w.min(max_w)),
+                    (Some(w), false) => Some(w),
+                    (None, true) => Some(max_w),
+                    (None, false) => None,
+                };
             }
             if let Some(min_w) = frame.min_width {
-                inner_prop.width = Some(inner_prop.width.map_or(min_w, |w| w.max(min_w)));
+                p.width = p.width.map(|w| w.max(min_w));
             }
             if let Some(max_h) = frame.max_height {
-                inner_prop.height = Some(inner_prop.height.map_or(max_h, |h| h.min(max_h)));
+                p.height = match (p.height, max_h.is_finite()) {
+                    (Some(h), true) => Some(h.min(max_h)),
+                    (Some(h), false) => Some(h),
+                    (None, true) => Some(max_h),
+                    (None, false) => None,
+                };
             }
             if let Some(min_h) = frame.min_height {
-                inner_prop.height = Some(inner_prop.height.map_or(min_h, |h| h.max(min_h)));
+                p.height = p.height.map(|h| h.max(min_h));
             }
         }
+
+        let h_pad = props.padding.horizontal();
+        let v_pad = props.padding.vertical();
+        p.width = p.width.map(|w| {
+            if w.is_finite() {
+                (w - h_pad).max(0.0)
+            } else {
+                w
+            }
+        });
+        p.height = p.height.map(|h| {
+            if h.is_finite() {
+                (h - v_pad).max(0.0)
+            } else {
+                h
+            }
+        });
 
         if let Some((ratio, mode)) = props.aspect_ratio
             && ratio > 0.0
         {
-            match (inner_prop.width, inner_prop.height) {
+            match (p.width, p.height) {
                 (Some(w), Some(h)) if w.is_finite() && h.is_finite() => {
                     let target_h = w / ratio;
                     let target_w = h * ratio;
                     match mode {
                         rustui_core::ContentMode::Fit => {
                             if target_h <= h {
-                                inner_prop.height = Some(target_h);
+                                p.height = Some(target_h);
                             } else {
-                                inner_prop.width = Some(target_w);
+                                p.width = Some(target_w);
                             }
                         }
                         rustui_core::ContentMode::Fill => {
                             if target_h >= h {
-                                inner_prop.height = Some(target_h);
+                                p.height = Some(target_h);
                             } else {
-                                inner_prop.width = Some(target_w);
+                                p.width = Some(target_w);
                             }
                         }
                     }
                 }
                 (Some(w), None) if w.is_finite() => {
-                    inner_prop.height = Some(w / ratio);
+                    p.height = Some(w / ratio);
                 }
                 (None, Some(h)) if h.is_finite() => {
-                    inner_prop.width = Some(h * ratio);
+                    p.width = Some(h * ratio);
                 }
                 _ => {}
             }
         }
 
-        let mut child_size = if let Some(cid) = child {
-            self.measure_node(cid, inner_prop)
-        } else {
-            Size::ZERO
-        };
+        p
+    }
 
+    fn finalize_measured_size(
+        props: &rustui_core::LayoutProps,
+        mut content_size: Size<f32>,
+        inner_prop: Size<Option<f32>>,
+        proposed: Size<Option<f32>>,
+    ) -> Size<f32> {
         if let Some((ratio, _mode)) = props.aspect_ratio
             && ratio > 0.0
         {
             if let Some(w) = inner_prop.width.filter(|v| v.is_finite()) {
-                child_size = Size::new(w, w / ratio);
+                content_size = Size::new(w, w / ratio);
             } else if let Some(h) = inner_prop.height.filter(|v| v.is_finite()) {
-                child_size = Size::new(h * ratio, h);
+                content_size = Size::new(h * ratio, h);
             }
         }
 
+        let mut w = content_size.width + props.padding.horizontal();
+        let mut h = content_size.height + props.padding.vertical();
+
         if let Some(frame) = &props.frame {
-            let mut w = child_size.width;
-            let mut h = child_size.height;
             if let Some(ideal_w) = frame.ideal_width
-                && proposed.width.is_none()
+                && (proposed.width.is_none() || props.fixed_horizontal)
             {
                 w = ideal_w;
             }
             if let Some(ideal_h) = frame.ideal_height
-                && proposed.height.is_none()
+                && (proposed.height.is_none() || props.fixed_vertical)
             {
                 h = ideal_h;
             }
             if let Some(max_w) = frame.max_width {
                 if max_w.is_infinite() {
-                    if let Some(pw) = proposed.width.filter(|p| p.is_finite()) {
-                        w = w.max(pw);
+                    match proposed.width {
+                        Some(pw) if pw.is_infinite() => w = w.max(10_000.0),
+                        Some(pw) if pw.is_finite() => w = w.max(pw),
+                        _ => {}
                     }
                 } else {
                     w = w.min(max_w);
@@ -715,8 +929,10 @@ impl<'a> LayoutContext<'a> {
             }
             if let Some(max_h) = frame.max_height {
                 if max_h.is_infinite() {
-                    if let Some(ph) = proposed.height.filter(|p| p.is_finite()) {
-                        h = h.max(ph);
+                    match proposed.height {
+                        Some(ph) if ph.is_infinite() => h = h.max(10_000.0),
+                        Some(ph) if ph.is_finite() => h = h.max(ph),
+                        _ => {}
                     }
                 } else {
                     h = h.min(max_h);
@@ -725,19 +941,20 @@ impl<'a> LayoutContext<'a> {
             if let Some(min_h) = frame.min_height {
                 h = h.max(min_h);
             }
-            child_size = Size::new(w, h);
         }
 
-        Size::new(
-            child_size.width + props.padding.horizontal(),
-            child_size.height + props.padding.vertical(),
-        )
+        Size::new(w, h)
     }
 
     pub fn place_node(&mut self, node_id: NodeId, origin: Point, proposed: Size<Option<f32>>) {
         let fast_path = self.runtime.with_inner(|inner| {
             let n = inner.nodes.get(node_id)?;
             if n.layout_cache.last_proposal != Some(proposed) {
+                return None;
+            }
+            if (n.layout_cache.bounds.width - n.layout_cache.measured_size.width).abs() > 0.01
+                || (n.layout_cache.bounds.height - n.layout_cache.measured_size.height).abs() > 0.01
+            {
                 return None;
             }
             let exp_x = origin.x + n.layout_props.offset.x;
@@ -803,14 +1020,18 @@ impl<'a> LayoutContext<'a> {
                 props: rustui_core::LayoutProps,
                 child: Option<NodeId>,
             },
-            Composite {
-                props: rustui_core::LayoutProps,
-                child: Option<NodeId>,
-            },
-            Container(ContainerKind, Vec<NodeId>),
-            Custom(Rc<dyn Layout>, Vec<NodeId>),
-            Scroll(rustui_core::ScrollNodeData, Option<NodeId>),
-            VirtualList(rustui_core::VirtualListNodeData, Vec<NodeId>),
+            Container(rustui_core::Edges, ContainerKind, Vec<NodeId>),
+            Custom(rustui_core::Edges, Rc<dyn Layout>, Vec<NodeId>),
+            Scroll(
+                rustui_core::Edges,
+                rustui_core::ScrollNodeData,
+                Option<NodeId>,
+            ),
+            VirtualList(
+                rustui_core::Edges,
+                rustui_core::VirtualListNodeData,
+                Vec<NodeId>,
+            ),
             Leaf,
         }
 
@@ -833,15 +1054,14 @@ impl<'a> LayoutContext<'a> {
                 return (offset, PlaceAction::Hidden);
             }
 
+            let padding = n.layout_props.padding;
             let act = match &n.kind {
-                NodeKind::Modifier => PlaceAction::Modifier {
-                    props: n.layout_props.clone(),
-                    child: n.children.first().copied(),
-                },
-                NodeKind::Composite => PlaceAction::Composite {
-                    props: n.layout_props.clone(),
-                    child: n.children.first().copied(),
-                },
+                NodeKind::Modifier | NodeKind::Composite | NodeKind::Control(_) => {
+                    PlaceAction::Modifier {
+                        props: n.layout_props.clone(),
+                        child: n.children.first().copied(),
+                    }
+                }
                 NodeKind::Container(ContainerKind::CustomLayout) => {
                     let custom = n
                         .custom_layout
@@ -851,25 +1071,27 @@ impl<'a> LayoutContext<'a> {
                     let mut kids = Vec::new();
                     collect_flattened_children(inner, node_id, &mut kids);
                     if let Some(l) = custom {
-                        PlaceAction::Custom(l, kids)
+                        PlaceAction::Custom(padding, l, kids)
                     } else {
-                        PlaceAction::Container(ContainerKind::Fragment, kids)
+                        PlaceAction::Container(padding, ContainerKind::Fragment, kids)
                     }
                 }
                 NodeKind::Container(ck) => {
                     let ck = ck.clone();
                     let mut kids = Vec::new();
                     collect_flattened_children(inner, node_id, &mut kids);
-                    PlaceAction::Container(ck, kids)
+                    PlaceAction::Container(padding, ck, kids)
                 }
                 NodeKind::Dynamic(_) => {
                     let mut kids = Vec::new();
                     collect_flattened_children(inner, node_id, &mut kids);
-                    PlaceAction::Container(ContainerKind::Fragment, kids)
+                    PlaceAction::Container(padding, ContainerKind::Fragment, kids)
                 }
-                NodeKind::Scroll(s) => PlaceAction::Scroll(*s, n.children.first().copied()),
+                NodeKind::Scroll(s) => {
+                    PlaceAction::Scroll(padding, *s, n.children.first().copied())
+                }
                 NodeKind::VirtualList(vl) => {
-                    PlaceAction::VirtualList(vl.clone(), n.children.clone())
+                    PlaceAction::VirtualList(padding, vl.clone(), n.children.clone())
                 }
                 _ => PlaceAction::Leaf,
             };
@@ -885,7 +1107,7 @@ impl<'a> LayoutContext<'a> {
 
         match action {
             PlaceAction::Hidden | PlaceAction::Leaf => {}
-            PlaceAction::Modifier { props, child } | PlaceAction::Composite { props, child } => {
+            PlaceAction::Modifier { props, child } => {
                 if let Some(cid) = child {
                     let inner_bounds = bounds.inset(props.padding);
                     let child_prop = Size::new(Some(inner_bounds.width), Some(inner_bounds.height));
@@ -902,58 +1124,67 @@ impl<'a> LayoutContext<'a> {
                     self.place_node(cid, Point::new(cx, cy), child_prop);
                 }
             }
-            PlaceAction::Scroll(scroll, child) => {
+            PlaceAction::Scroll(padding, scroll, child) => {
                 if let Some(cid) = child {
+                    let inner_bounds = bounds.inset(padding);
                     let child_prop =
                         Size::new(
                             match scroll.axes {
                                 rustui_core::ScrollAxes::Horizontal
                                 | rustui_core::ScrollAxes::Both => Some(scroll.content_size.width),
-                                rustui_core::ScrollAxes::Vertical => Some(bounds.width),
+                                rustui_core::ScrollAxes::Vertical => Some(inner_bounds.width),
                             },
                             match scroll.axes {
                                 rustui_core::ScrollAxes::Vertical
                                 | rustui_core::ScrollAxes::Both => Some(scroll.content_size.height),
-                                rustui_core::ScrollAxes::Horizontal => Some(bounds.height),
+                                rustui_core::ScrollAxes::Horizontal => Some(inner_bounds.height),
                             },
                         );
-                    let child_origin =
-                        Point::new(bounds.x - scroll.offset.x, bounds.y - scroll.offset.y);
+                    let child_origin = Point::new(
+                        inner_bounds.x - scroll.offset.x,
+                        inner_bounds.y - scroll.offset.y,
+                    );
                     self.place_node(cid, child_origin, child_prop);
                 }
             }
-            PlaceAction::VirtualList(vl, kids) => {
+            PlaceAction::VirtualList(padding, vl, kids) => {
+                let inner_bounds = bounds.inset(padding);
                 let layout = LazyVStackLayout::from_data(&vl);
                 let mut children = Children {
                     ids: kids,
                     direction: dir,
+                    viewport: self.viewport,
                     engine: self,
                 };
-                layout.place(bounds, &mut children);
+                layout.place(inner_bounds, &mut children);
             }
-            PlaceAction::Custom(layout, kids) => {
+            PlaceAction::Custom(padding, layout, kids) => {
+                let inner_bounds = bounds.inset(padding);
                 let mut children = Children {
                     ids: kids,
                     direction: dir,
+                    viewport: self.viewport,
                     engine: self,
                 };
-                layout.place(bounds, &mut children);
+                layout.place(inner_bounds, &mut children);
             }
-            PlaceAction::Container(ck, kids) => {
+            PlaceAction::Container(padding, ck, kids) => {
+                let inner_bounds = bounds.inset(padding);
                 let mut children = Children {
                     ids: kids,
                     direction: dir,
+                    viewport: self.viewport,
                     engine: self,
                 };
                 match ck {
                     ContainerKind::VStack { spacing, alignment } => {
-                        VStackLayout { spacing, alignment }.place(bounds, &mut children);
+                        VStackLayout { spacing, alignment }.place(inner_bounds, &mut children);
                     }
                     ContainerKind::HStack { spacing, alignment } => {
-                        HStackLayout { spacing, alignment }.place(bounds, &mut children);
+                        HStackLayout { spacing, alignment }.place(inner_bounds, &mut children);
                     }
                     ContainerKind::ZStack { alignment } => {
-                        ZStackLayout { alignment }.place(bounds, &mut children);
+                        ZStackLayout { alignment }.place(inner_bounds, &mut children);
                     }
                     ContainerKind::Grid {
                         columns,
@@ -965,14 +1196,16 @@ impl<'a> LayoutContext<'a> {
                             h_spacing,
                             v_spacing,
                         }
-                        .place(bounds, &mut children);
+                        .place(inner_bounds, &mut children);
                     }
                     ContainerKind::Fragment => {
-                        let mut y = bounds.y;
+                        let mut y = inner_bounds.y;
                         for i in 0..children.len() {
-                            let c_prop = Size::new(Some(bounds.width), None);
+                            let c_prop = Size::new(Some(inner_bounds.width), None);
                             let sz = children.child(i).size(c_prop);
-                            children.child(i).place(Point::new(bounds.x, y), c_prop);
+                            children
+                                .child(i)
+                                .place(Point::new(inner_bounds.x, y), c_prop);
                             y += sz.height;
                         }
                     }
@@ -989,27 +1222,32 @@ impl<'a> LayoutContext<'a> {
 
     fn sync_transparent_descendant_bounds(&self, parent_id: NodeId) {
         self.runtime.with_inner_mut(|inner| {
-            let children = inner
-                .nodes
-                .get(parent_id)
-                .map(|n| n.children.clone())
-                .unwrap_or_default();
-            for cid in children {
-                let is_transparent = inner.nodes.get(cid).is_some_and(|c| {
-                    matches!(
-                        c.kind,
-                        NodeKind::Dynamic(_) | NodeKind::Container(ContainerKind::Fragment)
-                    )
-                });
-                if is_transparent {
-                    let union_rect = compute_subtree_union(inner, cid);
-                    if let Some(c) = inner.nodes.get_mut(cid) {
-                        c.layout_cache.bounds = union_rect;
-                        c.dirty.remove(DirtyFlags::LAYOUT);
-                    }
-                }
-            }
+            sync_transparent_recursive(inner, parent_id);
         });
+    }
+}
+
+fn sync_transparent_recursive(inner: &mut RuntimeInner, parent_id: NodeId) {
+    let children = inner
+        .nodes
+        .get(parent_id)
+        .map(|n| n.children.clone())
+        .unwrap_or_default();
+    for cid in children {
+        let is_transparent = inner.nodes.get(cid).is_some_and(|c| {
+            matches!(
+                c.kind,
+                NodeKind::Dynamic(_) | NodeKind::Container(ContainerKind::Fragment)
+            )
+        });
+        if is_transparent {
+            sync_transparent_recursive(inner, cid);
+            let union_rect = compute_subtree_union(inner, cid);
+            if let Some(c) = inner.nodes.get_mut(cid) {
+                c.layout_cache.bounds = union_rect;
+                c.dirty.remove(DirtyFlags::LAYOUT);
+            }
+        }
     }
 }
 
@@ -1072,10 +1310,13 @@ impl LayoutEngine {
             runtime,
             measurer,
             direction: dir,
+            viewport,
             laid_out_count: 0,
         };
         let proposed = Size::new(Some(viewport.width), Some(viewport.height));
-        ctx.place_node(root, Point::ZERO, proposed);
+        runtime.enter(|| {
+            ctx.place_node(root, Point::ZERO, proposed);
+        });
         let laid_out = ctx.laid_out_count;
 
         let elapsed = start.elapsed();

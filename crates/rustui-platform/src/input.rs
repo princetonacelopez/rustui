@@ -15,7 +15,16 @@ pub struct HitTester;
 impl HitTester {
     /// Returns the front-most visible node containing `point` along with its ancestor path.
     pub fn hit_test(runtime: &Runtime, root: NodeId, point: Point) -> Option<NodeId> {
-        runtime.with_inner(|inner| hit_test_recursive(inner, root, point, None))
+        runtime.with_inner(|inner| {
+            let mut overlays = Vec::new();
+            collect_popover_overlays(inner, root, &mut overlays);
+            for overlay_id in overlays.into_iter().rev() {
+                if let Some(hit) = hit_test_recursive(inner, overlay_id, point, None) {
+                    return Some(hit);
+                }
+            }
+            hit_test_recursive(inner, root, point, None)
+        })
     }
 
     /// Returns the chain `[hit_node, parent, ..., root]` for event bubbling.
@@ -29,6 +38,21 @@ impl HitTester {
             }
         });
         chain
+    }
+}
+
+fn collect_popover_overlays(inner: &RuntimeInner, node_id: NodeId, out: &mut Vec<NodeId>) {
+    let Some(node) = inner.nodes.get(node_id) else {
+        return;
+    };
+    if node.visual_props.hidden {
+        return;
+    }
+    if node.accessibility.role == rustui_core::AccessibilityRole::Popover {
+        out.push(node_id);
+    }
+    for &cid in &node.children {
+        collect_popover_overlays(inner, cid, out);
     }
 }
 

@@ -54,6 +54,18 @@ mod tests {
         );
         // Should emit glyph runs without panicking even on mixed scripts + emoji
         assert!(!list.commands.is_empty() || unwrapped.size.width > 0.0);
+        let mut atlas = rustui_render::GlyphAtlas::default();
+        let mut glyph_count = 0usize;
+        for cmd in &list.commands {
+            if let rustui_render::DisplayCommand::DrawGlyphRun { glyphs, .. } = cmd {
+                for g in glyphs {
+                    glyph_count += 1;
+                    let blob = list.fonts.get(&g.key.font_id);
+                    atlas.get_or_rasterize(g.key, blob);
+                }
+            }
+        }
+        assert!(glyph_count > 0);
     }
 
     #[test]

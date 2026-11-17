@@ -75,6 +75,7 @@ struct EffectEntry {
 
 /// Type-erased reactive property applicator closure.
 pub type ReactiveApplyFn = Rc<dyn Fn(&mut Node, Box<dyn Any>) -> DirtyFlags>;
+type ReactiveInnerPostFn = Rc<dyn Fn(&mut RuntimeInner, NodeId)>;
 type SpawnCallback = Box<dyn FnOnce(Box<dyn Any + Send>)>;
 
 /// Computes a new typed value from reactive signals and applies it to a retained [`Node`].
@@ -82,6 +83,7 @@ pub struct NodeReactiveEntry {
     pub node: NodeId,
     pub compute: Rc<dyn Fn() -> Box<dyn Any>>,
     pub apply: ReactiveApplyFn,
+    post_inner: Option<ReactiveInnerPostFn>,
     pub deps: Vec<SignalKey>,
 }
 
@@ -706,6 +708,50 @@ impl Runtime {
         compute: impl Fn() -> T + 'static,
         apply: impl Fn(&mut Node, T) -> DirtyFlags + 'static,
     ) -> ReactiveId {
+        self.register_updater_internal(node, compute, apply, None)
+    }
+
+    /// Registers a reactive environment updater that propagates `T` to `node` and its subtree.
+    pub fn register_env_updater<T: Clone + 'static>(
+        &self,
+        node: NodeId,
+        compute: impl Fn() -> T + 'static,
+    ) -> ReactiveId {
+        let post: ReactiveInnerPostFn = Rc::new(|inner, node_id| {
+            let val = inner.nodes.get(node_id).and_then(|n| n.env.get::<T>());
+            if let Some(val) = val {
+                let mut queue = inner
+                    .nodes
+                    .get(node_id)
+                    .map(|n| n.children.clone())
+                    .unwrap_or_default();
+                while let Some(cid) = queue.pop() {
+                    if let Some(c) = inner.nodes.get_mut(cid) {
+                        c.env.insert(val.clone());
+                        c.dirty.insert(DirtyFlags::PAINT);
+                        queue.extend(c.children.iter().copied());
+                    }
+                }
+            }
+        });
+        self.register_updater_internal(
+            node,
+            compute,
+            |n, val| {
+                n.env.insert(val);
+                DirtyFlags::PAINT
+            },
+            Some(post),
+        )
+    }
+
+    fn register_updater_internal<T: 'static>(
+        &self,
+        node: NodeId,
+        compute: impl Fn() -> T + 'static,
+        apply: impl Fn(&mut Node, T) -> DirtyFlags + 'static,
+        post_inner: Option<ReactiveInnerPostFn>,
+    ) -> ReactiveId {
         let compute_erased: Rc<dyn Fn() -> Box<dyn Any>> =
             Rc::new(move || Box::new(compute()) as Box<dyn Any>);
         let apply_erased: ReactiveApplyFn = Rc::new(move |n, boxed| {
@@ -723,6 +769,7 @@ impl Runtime {
                 node,
                 compute: compute_erased,
                 apply: apply_erased,
+                post_inner,
                 deps: Vec::new(),
             });
             let _ = uid;
@@ -733,7 +780,7 @@ impl Runtime {
     }
 
     fn run_node_updater(&self, reactive_id: ReactiveId) {
-        let (node_id, compute, apply) = {
+        let (node_id, compute, apply, post_inner) = {
             let mut inner = self.inner.borrow_mut();
             let Some(entry) = inner.reactives.get_mut(reactive_id) else {
                 return;
@@ -741,6 +788,7 @@ impl Runtime {
             let node_id = entry.node;
             let compute = entry.compute.clone();
             let apply = entry.apply.clone();
+            let post_inner = entry.post_inner.clone();
             let old_deps = std::mem::take(&mut entry.deps);
             if !inner.nodes.contains_key(node_id) {
                 return;
@@ -751,7 +799,7 @@ impl Runtime {
             inner
                 .tracking_stack
                 .push((TrackingTarget::NodeUpdater(reactive_id), Vec::new()));
-            (node_id, compute, apply)
+            (node_id, compute, apply, post_inner)
         };
 
         let val = self.enter(|| compute());
@@ -804,6 +852,9 @@ impl Runtime {
                     ));
                 }
             }
+        }
+        if let Some(post) = post_inner {
+            post(&mut inner, node_id);
         }
         let now = Instant::now();
         for (prop, from_v, to_v, animation) in anims_to_start {
@@ -1275,6 +1326,24 @@ impl Runtime {
         let mut queue = vec![node_id];
         while let Some(id) = queue.pop() {
             if let Some(n) = inner.nodes.get_mut(id) {
+                n.env.insert(value.clone());
+                queue.extend(n.children.iter().copied());
+            }
+        }
+    }
+
+    /// Fills `value` into descendants of `node_id` that do not already define `T`.
+    pub fn inherit_environment<T: Clone + 'static>(&self, node_id: NodeId, value: T) {
+        let mut inner = self.inner.borrow_mut();
+        let mut queue = inner
+            .nodes
+            .get(node_id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default();
+        while let Some(id) = queue.pop() {
+            if let Some(n) = inner.nodes.get_mut(id)
+                && !n.env.contains::<T>()
+            {
                 n.env.insert(value.clone());
                 queue.extend(n.children.iter().copied());
             }
