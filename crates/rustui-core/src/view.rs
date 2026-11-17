@@ -208,7 +208,7 @@ impl BuildCx {
 
     pub fn build_child<V: View>(&self, parent: NodeId, view: V) -> NodeId {
         let mut child_cx = BuildCx::new(self.runtime.clone(), Some(parent));
-        let child_id = view.build_node(&mut child_cx);
+        let child_id = self.runtime.enter(|| view.build_node(&mut child_cx));
         self.runtime.attach_child(parent, child_id);
         child_id
     }
@@ -403,6 +403,12 @@ impl IntoTextSource for String {
 impl<F: Fn() -> String + 'static> IntoTextSource for F {
     fn into_text_source(self) -> TextSource {
         TextSource::Reactive(Rc::new(self))
+    }
+}
+
+impl IntoTextSource for TextSource {
+    fn into_text_source(self) -> TextSource {
+        self
     }
 }
 

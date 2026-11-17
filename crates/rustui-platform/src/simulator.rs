@@ -62,7 +62,7 @@ impl HeadlessSimulator {
     pub fn new<V: View>(view: V, viewport: Size<f32>) -> Self {
         let runtime = Runtime::new();
         let mut bcx = BuildCx::new(runtime.clone(), None);
-        let root = view.build_node(&mut bcx);
+        let root = runtime.enter(|| view.build_node(&mut bcx));
         runtime.with_inner_mut(|inner| {
             inner.root = Some(root);
         });

@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use rustui_core::{
-    ContainerKind, DirtyFlags, NodeId, NodeKind, Point, Rect, Runtime, RuntimeInner, TextNodeData,
+    ContainerKind, DirtyFlags, NodeId, NodeKind, Point, Rect, Runtime, TextNodeData,
 };
 
 use crate::display_list::{BlendMode, DisplayList};
@@ -26,8 +26,8 @@ pub fn emit_display_list(
     let mut list = DisplayList::new(scale_factor);
     let mut painter = text_painter;
 
-    runtime.with_inner_mut(|inner| {
-        emit_node_recursive(inner, root, resources, &mut painter, &mut list);
+    runtime.enter(|| {
+        emit_node_recursive(runtime, root, resources, &mut painter, &mut list);
     });
 
     let elapsed = start.elapsed();
@@ -40,24 +40,47 @@ pub fn emit_display_list(
 }
 
 fn emit_node_recursive(
-    inner: &mut RuntimeInner,
+    runtime: &Runtime,
     node_id: NodeId,
     resources: &mut ResourceLoader,
     text_painter: &mut Option<&mut dyn TextPainter>,
     list: &mut DisplayList,
 ) {
-    let Some(node) = inner.nodes.get_mut(node_id) else {
-        return;
-    };
-    if node.visual_props.hidden {
-        node.dirty.remove(DirtyFlags::PAINT);
-        return;
+    enum LeafEmit {
+        None,
+        Divider(rustui_core::Color),
+        Image(rustui_core::ImageNodeData),
+        Text(TextNodeData),
+        Canvas(rustui_core::CanvasPaintFn),
+        Shader(rustui_core::ShaderNodeData),
+        ScrollClip(Rect),
     }
 
-    let bounds = node.bounds();
-    let visual = node.visual_props.clone();
-    let children = node.children.clone();
-    node.dirty.remove(DirtyFlags::PAINT);
+    let snapshot = runtime.with_inner_mut(|inner| {
+        let node = inner.nodes.get_mut(node_id)?;
+        if node.visual_props.hidden {
+            node.dirty.remove(DirtyFlags::PAINT);
+            return None;
+        }
+        let bounds = node.bounds();
+        let visual = node.visual_props.clone();
+        let children = node.children.clone();
+        node.dirty.remove(DirtyFlags::PAINT);
+        let leaf = match &node.kind {
+            NodeKind::Container(ContainerKind::Divider { color, .. }) => LeafEmit::Divider(*color),
+            NodeKind::Image(img) => LeafEmit::Image(img.clone()),
+            NodeKind::Text(t) => LeafEmit::Text(t.clone()),
+            NodeKind::Canvas(c) => LeafEmit::Canvas(c.painter.clone()),
+            NodeKind::Shader(s) => LeafEmit::Shader(s.clone()),
+            NodeKind::Scroll(_) => LeafEmit::ScrollClip(bounds),
+            _ => LeafEmit::None,
+        };
+        Some((bounds, visual, children, leaf))
+    });
+
+    let Some((bounds, visual, children, leaf)) = snapshot else {
+        return;
+    };
 
     let needs_layer = visual.opacity < 0.999;
     if needs_layer {
@@ -86,31 +109,6 @@ fn emit_node_recursive(
         }
     }
 
-    // Clone node payload briefly without holding `inner.nodes` across canvas callbacks.
-    enum LeafEmit {
-        None,
-        Divider(rustui_core::Color),
-        Image(rustui_core::ImageNodeData),
-        Text(TextNodeData),
-        Canvas(rustui_core::CanvasPaintFn),
-        Shader(rustui_core::ShaderNodeData),
-        ScrollClip(Rect),
-    }
-
-    let leaf = inner
-        .nodes
-        .get(node_id)
-        .map(|n| match &n.kind {
-            NodeKind::Container(ContainerKind::Divider { color, .. }) => LeafEmit::Divider(*color),
-            NodeKind::Image(img) => LeafEmit::Image(img.clone()),
-            NodeKind::Text(t) => LeafEmit::Text(t.clone()),
-            NodeKind::Canvas(c) => LeafEmit::Canvas(c.painter.clone()),
-            NodeKind::Shader(s) => LeafEmit::Shader(s.clone()),
-            NodeKind::Scroll(_) => LeafEmit::ScrollClip(bounds),
-            _ => LeafEmit::None,
-        })
-        .unwrap_or(LeafEmit::None);
-
     let mut pushed_scroll_clip = false;
     match leaf {
         LeafEmit::None => {}
@@ -133,7 +131,6 @@ fn emit_node_recursive(
             if let Some(tp) = text_painter.as_deref_mut() {
                 tp.paint_text(&t, bounds, list);
             } else {
-                // Minimal fallback marker when rendering `rustui-render` standalone without `rustui-text`.
                 let c = t.color.unwrap_or(rustui_core::Color::BLACK);
                 if !t.text.is_empty() && bounds.width > 0.0 && bounds.height > 0.0 {
                     let glyph_h = (t.font.size * 0.65).min(bounds.height);
@@ -163,7 +160,7 @@ fn emit_node_recursive(
     }
 
     for cid in children {
-        emit_node_recursive(inner, cid, resources, text_painter, list);
+        emit_node_recursive(runtime, cid, resources, text_painter, list);
     }
 
     if pushed_scroll_clip {

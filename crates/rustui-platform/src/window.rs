@@ -207,7 +207,7 @@ impl WindowManager {
         let ak_adapter = AkAdapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
 
         let mut bcx = BuildCx::new(self.runtime.clone(), None);
-        let root = (spec.root_builder)(&mut bcx);
+        let root = self.runtime.enter(|| (spec.root_builder)(&mut bcx));
         self.runtime.with_inner_mut(|inner| {
             if inner.root.is_none() {
                 inner.root = Some(root);
