@@ -167,20 +167,35 @@ fn emit_node_recursive(
             node.focus.focusable && node.focus.focused && bounds.width > 0.0 && bounds.height > 0.0;
         let children = node.children.clone();
         node.dirty.remove(DirtyFlags::PAINT);
-        let leaf = match &node.kind {
-            NodeKind::Container(ContainerKind::Divider { color, .. }) => LeafEmit::Divider(*color),
-            NodeKind::Image(img) => LeafEmit::Image(img.clone()),
-            NodeKind::Text(t) => {
-                let mut cloned = t.clone();
-                if !parent_focused && !node.focus.focused {
-                    cloned.caret = None;
+        let text_scale = inner.text_scale_factor;
+        let leaf = if bounds.width <= 0.0 && bounds.height <= 0.0 {
+            LeafEmit::None
+        } else {
+            match &node.kind {
+                NodeKind::Container(ContainerKind::Divider { color, .. }) => {
+                    LeafEmit::Divider(*color)
                 }
-                LeafEmit::Text(cloned)
+                NodeKind::Image(img) => LeafEmit::Image(img.clone()),
+                NodeKind::Text(t) => {
+                    let mut cloned = t.clone();
+                    if !parent_focused && !node.focus.focused {
+                        cloned.caret = None;
+                    }
+                    if (text_scale - 1.0).abs() > f32::EPSILON {
+                        cloned.font.size *= text_scale;
+                        for span in &mut cloned.spans {
+                            if let Some(f) = &mut span.font {
+                                f.size *= text_scale;
+                            }
+                        }
+                    }
+                    LeafEmit::Text(cloned)
+                }
+                NodeKind::Canvas(c) => LeafEmit::Canvas(c.painter.clone()),
+                NodeKind::Shader(s) => LeafEmit::Shader(s.clone()),
+                NodeKind::Scroll(_) => LeafEmit::ScrollClip(bounds),
+                _ => LeafEmit::None,
             }
-            NodeKind::Canvas(c) => LeafEmit::Canvas(c.painter.clone()),
-            NodeKind::Shader(s) => LeafEmit::Shader(s.clone()),
-            NodeKind::Scroll(_) => LeafEmit::ScrollClip(bounds),
-            _ => LeafEmit::None,
         };
         Some((
             bounds,

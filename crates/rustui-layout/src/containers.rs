@@ -1,5 +1,7 @@
 //! Built-in layout containers: `VStack`, `HStack`, `ZStack`, `Spacer`, `Grid`, `ScrollView`, `LazyVStack`.
 
+use std::collections::HashSet;
+
 use rustui_core::{
     Alignment, GridTrack, HorizontalAlignment, Point, Rect, ScrollAxes, Size, TextDirection,
     VerticalAlignment, VirtualListNodeData,
@@ -331,6 +333,16 @@ pub struct GridLayout {
     pub v_spacing: f32,
 }
 
+struct GridPlacement {
+    child_idx: usize,
+    row: usize,
+    col: usize,
+    col_span: usize,
+    row_span: usize,
+    cell_w: f32,
+    measured_h: f32,
+}
+
 impl GridLayout {
     fn compute_col_widths(&self, proposed_width: Option<f32>) -> Vec<f32> {
         if self.columns.is_empty() {
@@ -368,6 +380,83 @@ impl GridLayout {
         }
         widths
     }
+
+    fn compute_grid_plan(
+        &self,
+        col_widths: &[f32],
+        children: &mut Children<'_>,
+    ) -> (Vec<GridPlacement>, Vec<f32>) {
+        let cols = col_widths.len().max(1);
+        let mut occupied = HashSet::<(usize, usize)>::new();
+        let mut cur_row = 0usize;
+        let mut cur_col = 0usize;
+        let mut placements = Vec::with_capacity(children.len());
+        let mut row_heights = Vec::<f32>::new();
+
+        for idx in 0..children.len() {
+            let (raw_cs, raw_rs) = children.child(idx).grid_span();
+            let col_span = raw_cs.clamp(1, cols);
+            let row_span = raw_rs.max(1);
+
+            loop {
+                if cur_col >= cols {
+                    cur_row += 1;
+                    cur_col = 0;
+                    continue;
+                }
+                if cur_col + col_span > cols {
+                    cur_row += 1;
+                    cur_col = 0;
+                    continue;
+                }
+                let fits = (0..row_span).all(|dr| {
+                    (0..col_span).all(|dc| !occupied.contains(&(cur_row + dr, cur_col + dc)))
+                });
+                if fits {
+                    break;
+                }
+                cur_col += 1;
+            }
+
+            for dr in 0..row_span {
+                for dc in 0..col_span {
+                    occupied.insert((cur_row + dr, cur_col + dc));
+                }
+            }
+
+            let cell_w = col_widths[cur_col..cur_col + col_span].iter().sum::<f32>()
+                + self.h_spacing * ((col_span - 1) as f32);
+            let measured = children.child(idx).size(Size::new(Some(cell_w), None));
+            let needed_rows = cur_row + row_span;
+            if row_heights.len() < needed_rows {
+                row_heights.resize(needed_rows, 0.0);
+            }
+            if row_span == 1 {
+                row_heights[cur_row] = row_heights[cur_row].max(measured.height);
+            } else {
+                let per_row = (measured.height
+                    - self.v_spacing * (row_span.saturating_sub(1) as f32))
+                    .max(0.0)
+                    / row_span as f32;
+                for rh in &mut row_heights[cur_row..cur_row + row_span] {
+                    *rh = rh.max(per_row);
+                }
+            }
+
+            placements.push(GridPlacement {
+                child_idx: idx,
+                row: cur_row,
+                col: cur_col,
+                col_span,
+                row_span,
+                cell_w,
+                measured_h: measured.height,
+            });
+            cur_col += col_span;
+        }
+
+        (placements, row_heights)
+    }
 }
 
 impl Layout for GridLayout {
@@ -378,26 +467,9 @@ impl Layout for GridLayout {
         }
         let col_widths = self.compute_col_widths(proposed.width);
         let cols = col_widths.len();
-        let mut total_h = 0.0f32;
-        let mut row_idx = 0usize;
-
-        while row_idx * cols < n {
-            let mut row_h = 0.0f32;
-            for (c, &cw) in col_widths.iter().enumerate() {
-                let idx = row_idx * cols + c;
-                if idx >= n {
-                    break;
-                }
-                let sz = children.child(idx).size(Size::new(Some(cw), None));
-                row_h = row_h.max(sz.height);
-            }
-            if row_idx > 0 {
-                total_h += self.v_spacing;
-            }
-            total_h += row_h;
-            row_idx += 1;
-        }
-
+        let (_, row_heights) = self.compute_grid_plan(&col_widths, children);
+        let total_h = row_heights.iter().sum::<f32>()
+            + self.v_spacing * (row_heights.len().saturating_sub(1) as f32);
         let total_w =
             col_widths.iter().sum::<f32>() + self.h_spacing * (cols.saturating_sub(1) as f32);
         Size::new(total_w, total_h)
@@ -410,47 +482,108 @@ impl Layout for GridLayout {
         }
         let dir = children.direction();
         let col_widths = self.compute_col_widths(Some(bounds.width));
-        let cols = col_widths.len();
-        let mut y = bounds.y;
-        let mut row_idx = 0usize;
+        let (placements, row_heights) = self.compute_grid_plan(&col_widths, children);
 
-        while row_idx * cols < n {
-            let mut row_h = 0.0f32;
+        let mut col_x = vec![bounds.x; col_widths.len()];
+        if dir == TextDirection::Rtl {
+            let mut cursor = bounds.max_x();
             for (c, &cw) in col_widths.iter().enumerate() {
-                let idx = row_idx * cols + c;
-                if idx >= n {
-                    break;
-                }
-                let sz = children.child(idx).size(Size::new(Some(cw), None));
-                row_h = row_h.max(sz.height);
+                cursor -= cw;
+                col_x[c] = cursor;
+                cursor -= self.h_spacing;
             }
+        } else {
+            let mut cursor = bounds.x;
+            for (c, &cw) in col_widths.iter().enumerate() {
+                col_x[c] = cursor;
+                cursor += cw + self.h_spacing;
+            }
+        }
 
-            let mut x = if dir == TextDirection::Rtl {
-                bounds.max_x()
+        let mut row_y = vec![bounds.y; row_heights.len()];
+        let mut cy = bounds.y;
+        for (r, &rh) in row_heights.iter().enumerate() {
+            row_y[r] = cy;
+            cy += rh + self.v_spacing;
+        }
+
+        for item in placements {
+            let spanned_h = row_heights[item.row..item.row + item.row_span]
+                .iter()
+                .sum::<f32>()
+                + self.v_spacing * (item.row_span.saturating_sub(1) as f32);
+            let final_h = spanned_h.max(item.measured_h * 0.0);
+            let px = if dir == TextDirection::Rtl {
+                col_x[item.col + item.col_span - 1]
             } else {
-                bounds.x
+                col_x[item.col]
             };
-            for (c, &cw) in col_widths.iter().enumerate() {
-                let idx = row_idx * cols + c;
-                if idx >= n {
-                    break;
-                }
-                let pos_x = if dir == TextDirection::Rtl {
-                    x -= cw;
-                    let px = x;
-                    x -= self.h_spacing;
-                    px
-                } else {
-                    let px = x;
-                    x += cw + self.h_spacing;
-                    px
-                };
-                children
-                    .child(idx)
-                    .place(Point::new(pos_x, y), Size::new(Some(cw), Some(row_h)));
+            children.child(item.child_idx).place(
+                Point::new(px, row_y[item.row]),
+                Size::new(Some(item.cell_w), Some(final_h)),
+            );
+        }
+    }
+}
+
+/// Adaptive layout selecting the first child candidate whose ideal size fits inside the proposal.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ViewThatFitsLayout;
+
+impl ViewThatFitsLayout {
+    fn pick_child(
+        &self,
+        proposed: Size<Option<f32>>,
+        children: &mut Children<'_>,
+    ) -> Option<usize> {
+        let n = children.len();
+        if n == 0 {
+            return None;
+        }
+        let max_w = proposed.width.filter(|w| w.is_finite());
+        let max_h = proposed.height.filter(|h| h.is_finite());
+        for i in 0..n {
+            let ideal = children.child(i).size(Size::UNSPECIFIED);
+            let fits_w = max_w.is_none_or(|mw| ideal.width <= mw + 0.5);
+            let fits_h = max_h.is_none_or(|mh| ideal.height <= mh + 0.5);
+            if fits_w && fits_h {
+                return Some(i);
             }
-            y += row_h + self.v_spacing;
-            row_idx += 1;
+        }
+        Some(n - 1)
+    }
+}
+
+impl Layout for ViewThatFitsLayout {
+    fn size(&self, proposed: Size<Option<f32>>, children: &mut Children<'_>) -> Size<f32> {
+        let Some(chosen) = self.pick_child(proposed, children) else {
+            return Size::ZERO;
+        };
+        let ideal = children.child(chosen).size(Size::UNSPECIFIED);
+        let constrained = children.child(chosen).size(proposed);
+        Size::new(
+            proposed
+                .width
+                .filter(|w| w.is_finite())
+                .map_or(ideal.width, |w| constrained.width.min(w)),
+            proposed
+                .height
+                .filter(|h| h.is_finite())
+                .map_or(ideal.height, |h| constrained.height.min(h)),
+        )
+    }
+
+    fn place(&self, bounds: Rect, children: &mut Children<'_>) {
+        let prop = Size::new(Some(bounds.width), Some(bounds.height));
+        let Some(chosen) = self.pick_child(prop, children) else {
+            return;
+        };
+        for i in 0..children.len() {
+            if i == chosen {
+                children.child(i).place(bounds.origin(), prop);
+            } else {
+                children.child(i).collapse_subtree();
+            }
         }
     }
 }

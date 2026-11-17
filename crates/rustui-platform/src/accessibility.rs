@@ -2,10 +2,10 @@
 //! NSAccessibility, and UI Automation.
 
 use accesskit::{
-    Action, ActionData, ActionRequest, Node as AkNode, NodeId as AkNodeId, Rect as AkRect, Role,
-    TreeId, TreeInfo, TreeUpdate,
+    Action, ActionData, ActionRequest, Live, Node as AkNode, NodeId as AkNodeId, Rect as AkRect,
+    Role, TreeId, TreeInfo, TreeUpdate,
 };
-use rustui_core::{AccessibilityRole, NodeId, NodeKind, Runtime, RuntimeInner};
+use rustui_core::{AccessibilityLive, AccessibilityRole, NodeId, NodeKind, Runtime, RuntimeInner};
 use slotmap::{Key, KeyData};
 
 use crate::input::FocusManager;
@@ -153,8 +153,46 @@ impl AccessKitBridge {
                 }
                 false
             }
+            Action::CustomAction => {
+                if let Some(ActionData::CustomAction(action_idx)) = req.data {
+                    let cb = runtime.with_inner(|inner| {
+                        let node = inner.nodes.get(node_id)?;
+                        let name = node
+                            .accessibility
+                            .custom_action_names
+                            .get(action_idx as usize)?;
+                        node.events.custom_actions.get(name).cloned()
+                    });
+                    if let Some(f) = cb {
+                        runtime.enter(|| f());
+                        return true;
+                    }
+                }
+                false
+            }
             _ => false,
         }
+    }
+}
+
+fn collect_combined_text(inner: &RuntimeInner, node_id: NodeId, parts: &mut Vec<String>) {
+    let Some(node) = inner.nodes.get(node_id) else {
+        return;
+    };
+    if node.visual_props.hidden || node.accessibility.hidden {
+        return;
+    }
+    if let Some(lbl) = &node.accessibility.label {
+        if !lbl.is_empty() {
+            parts.push(lbl.clone());
+        }
+    } else if let NodeKind::Text(t) = &node.kind
+        && !t.text.is_empty()
+    {
+        parts.push(t.text.clone());
+    }
+    for &cid in &node.children {
+        collect_combined_text(inner, cid, parts);
     }
 }
 
@@ -171,10 +209,30 @@ fn collect_ak_nodes(inner: &RuntimeInner, node_id: NodeId, out: &mut Vec<(AkNode
 
     if let Some(label) = &node.accessibility.label {
         ak.set_label(label.as_str());
+    } else if node.accessibility.combine_children {
+        let mut combined = Vec::new();
+        for &cid in &node.children {
+            collect_combined_text(inner, cid, &mut combined);
+        }
+        if !combined.is_empty() {
+            ak.set_label(combined.join(" "));
+        }
     } else if let NodeKind::Text(t) = &node.kind
         && !t.text.is_empty()
     {
         ak.set_label(t.text.as_str());
+    }
+
+    if let Some(hint) = &node.accessibility.hint
+        && !hint.is_empty()
+    {
+        ak.set_description(hint.as_str());
+    }
+
+    match node.accessibility.live {
+        AccessibilityLive::Off => {}
+        AccessibilityLive::Polite => ak.set_live(Live::Polite),
+        AccessibilityLive::Assertive => ak.set_live(Live::Assertive),
     }
 
     if let Some(val) = &node.accessibility.value {
@@ -214,19 +272,44 @@ fn collect_ak_nodes(inner: &RuntimeInner, node_id: NodeId, out: &mut Vec<(AkNode
     if node.accessibility.supports_decrement || node.events.on_accessibility_decrement.is_some() {
         ak.add_action(Action::Decrement);
     }
+    if !node.accessibility.custom_action_names.is_empty() {
+        ak.add_action(Action::CustomAction);
+        for (idx, name) in node.accessibility.custom_action_names.iter().enumerate() {
+            ak.push_custom_action(accesskit::CustomAction {
+                id: idx as i32,
+                description: name.clone(),
+            });
+        }
+    }
 
-    let mut ak_children = Vec::new();
-    for &cid in &node.children {
-        if let Some(c) = inner.nodes.get(cid)
-            && !c.visual_props.hidden
-            && !c.accessibility.hidden
-        {
+    if !node.accessibility.combine_children {
+        let mut visible_children: Vec<NodeId> = node
+            .children
+            .iter()
+            .copied()
+            .filter(|cid| {
+                inner
+                    .nodes
+                    .get(*cid)
+                    .is_some_and(|c| !c.visual_props.hidden && !c.accessibility.hidden)
+            })
+            .collect();
+        visible_children.sort_by(|a, b| {
+            let na = &inner.nodes[*a];
+            let nb = &inner.nodes[*b];
+            nb.accessibility
+                .sort_priority
+                .total_cmp(&na.accessibility.sort_priority)
+        });
+
+        let mut ak_children = Vec::with_capacity(visible_children.len());
+        for cid in visible_children {
             ak_children.push(to_ak_id(cid));
             collect_ak_nodes(inner, cid, out);
         }
-    }
-    if !ak_children.is_empty() {
-        ak.set_children(ak_children);
+        if !ak_children.is_empty() {
+            ak.set_children(ak_children);
+        }
     }
 
     out.push((to_ak_id(node_id), ak));
@@ -269,6 +352,9 @@ fn map_role(role: AccessibilityRole, kind: &NodeKind) -> Role {
             AccessibilityRole::Splitter => Role::Splitter,
             AccessibilityRole::Navigation => Role::Navigation,
             AccessibilityRole::ProgressIndicator => Role::ProgressIndicator,
+            AccessibilityRole::Meter => Role::Meter,
+            AccessibilityRole::AlertDialog => Role::AlertDialog,
+            AccessibilityRole::Status => Role::Status,
         };
     }
 
@@ -284,8 +370,10 @@ fn map_role(role: AccessibilityRole, kind: &NodeKind) -> Role {
             "slider" => Role::Slider,
             "picker" => Role::ComboBox,
             "textfield" => Role::TextInput,
-            "texteditor" => Role::MultilineTextInput,
+            "texteditor" | "editorsurface" => Role::MultilineTextInput,
             "securefield" => Role::PasswordInput,
+            "progressview" => Role::ProgressIndicator,
+            "gauge" => Role::Meter,
             _ => Role::GenericContainer,
         },
         _ => Role::GenericContainer,

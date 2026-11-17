@@ -37,6 +37,8 @@ pub struct GlyphAtlas {
     pixels: Vec<u8>,
     shelves: Vec<Shelf>,
     entries: HashMap<GlyphKey, AtlasGlyphEntry>,
+    last_used_gen: HashMap<GlyphKey, u64>,
+    generation: u64,
     scale_cx: ScaleContext,
     pub lcd_aa: bool,
     pub dirty: bool,
@@ -69,6 +71,8 @@ impl GlyphAtlas {
             pixels: vec![0u8; (w * h * 4) as usize],
             shelves: Vec::new(),
             entries: HashMap::new(),
+            last_used_gen: HashMap::new(),
+            generation: 1,
             scale_cx: ScaleContext::new(),
             lcd_aa: false,
             dirty: true,
@@ -87,6 +91,35 @@ impl GlyphAtlas {
         self.entries.len()
     }
 
+    /// Advances the LRU frame counter and evicts oldest glyphs when entries exceed `max_entries`.
+    pub fn evict_if_over_budget(&mut self, max_entries: usize) -> usize {
+        if self.entries.len() <= max_entries {
+            return 0;
+        }
+        let mut by_age: Vec<(u64, GlyphKey)> = self
+            .entries
+            .keys()
+            .map(|k| (self.last_used_gen.get(k).copied().unwrap_or(0), *k))
+            .collect();
+        by_age.sort_by_key(|(g, _)| *g);
+        let remove_count = self.entries.len().saturating_sub(max_entries);
+        for (_, k) in by_age.into_iter().take(remove_count) {
+            self.entries.remove(&k);
+            self.last_used_gen.remove(&k);
+        }
+        if self.entries.is_empty() {
+            self.shelves.clear();
+            self.pixels.fill(0);
+        }
+        self.dirty = true;
+        remove_count
+    }
+
+    /// Approximates active 1024-row atlas pages occupied by current pixel backing storage.
+    pub fn page_count(&self) -> usize {
+        (self.height as usize).div_ceil(1024).max(1)
+    }
+
     pub fn get(&self, key: &GlyphKey) -> Option<&AtlasGlyphEntry> {
         self.entries.get(key)
     }
@@ -97,9 +130,13 @@ impl GlyphAtlas {
         key: GlyphKey,
         font_blob: Option<&FontBlob>,
     ) -> Option<AtlasGlyphEntry> {
+        self.generation = self.generation.wrapping_add(1);
+        let gen_id = self.generation;
         if let Some(entry) = self.entries.get(&key) {
+            self.last_used_gen.insert(key, gen_id);
             return Some(*entry);
         }
+        self.last_used_gen.insert(key, gen_id);
         let blob = font_blob?;
         let font = FontRef::from_index(&blob.bytes, blob.index as usize)?;
         let size_px = (key.size_q4 as f32) / 16.0;

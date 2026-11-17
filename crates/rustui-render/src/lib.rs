@@ -19,7 +19,10 @@ pub use display_list::{
     GradientKind, GradientStop, ImageId, PathOp, SubpixelBin,
 };
 pub use emitter::{TextPainter, emit_display_list};
-pub use inspector::InspectorOverlay;
+pub use inspector::{
+    InspectorFrameSnapshot, InspectorNodeSnapshot, InspectorOverlay, InspectorServer,
+    export_perfetto_trace,
+};
 pub use resources::{AsyncImageState, DecodedImage, ResourceLoader};
 
 #[cfg(test)]
@@ -182,5 +185,46 @@ mod tests {
         let third = dmg.collect(&rt, viewport);
         assert_eq!(third.len(), 1);
         assert!(third[0].width < 100.0);
+    }
+
+    #[test]
+    fn inspector_server_and_atlas_eviction_and_perfetto_work() {
+        let rt = rustui_core::Runtime::new();
+        let n = rt.alloc_node(rustui_core::NodeKind::Modifier, None);
+        rt.with_inner_mut(|inner| {
+            inner.root = Some(n);
+            inner.nodes.get_mut(n).unwrap().accessibility.label = Some("RootLabel".into());
+        });
+        let dmg = DamageTracker::new();
+        let insp = InspectorOverlay::new(true);
+        let snap = insp.capture_snapshot(&rt, &dmg);
+        assert_eq!(snap.node_count, 1);
+        assert!(snap.to_json_string().contains("RootLabel"));
+
+        let srv = InspectorServer::bind(0).expect("ephemeral inspector server");
+        let addr = srv.local_addr();
+        srv.publish_and_poll(&snap);
+        let mut client = std::net::TcpStream::connect(addr).expect("connect inspector");
+        std::io::Write::write_all(&mut client, b"GET\n").unwrap();
+        srv.publish_and_poll(&snap);
+        let mut resp = String::new();
+        std::io::Read::read_to_string(&mut client, &mut resp).unwrap();
+        assert!(resp.contains("RootLabel"));
+
+        let trace = export_perfetto_trace(&snap.metrics);
+        assert!(trace.contains("\"traceEvents\""));
+
+        let mut atlas = GlyphAtlas::new(128, 128);
+        for gid in 1..=4 {
+            let k = GlyphKey {
+                font_id: 1,
+                glyph_id: gid,
+                size_q4: 256,
+                subpixel_x: SubpixelBin::Zero,
+            };
+            atlas.insert_raw(k, 4, 4, 0, 4, false, &[255u8; 4 * 4 * 4]);
+        }
+        assert_eq!(atlas.evict_if_over_budget(2), 2);
+        assert_eq!(atlas.entry_count(), 2);
     }
 }

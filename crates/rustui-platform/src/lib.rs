@@ -7,10 +7,14 @@ pub mod simulator;
 pub mod window;
 
 pub use accessibility::{AccessKitBridge, WINDOW_AK_ROOT_ID, from_ak_id, to_ak_id};
-pub use input::{FocusManager, GestureRecognizer, HitTester, key_down};
+pub use input::{
+    ChordMatch, FocusManager, GestureRecognizer, HitTester, KeyChord, KeyContext, KeyStroke,
+    KeybindingEntry, KeybindingRegistry, key_down,
+};
 pub use services::{
-    DesktopPlatform, FileDialogOptions, MenuItemSpec, MenuSpec, NotificationSpec, Platform,
-    PlatformCapabilities, detect_platform_capabilities, detect_reduced_motion, detect_system_theme,
+    DesktopPlatform, FileDialogOptions, HotReloadHost, MenuItemSpec, MenuSpec, NotificationSpec,
+    Platform, PlatformCapabilities, detect_platform_capabilities, detect_reduced_motion,
+    detect_system_theme,
 };
 pub use simulator::{FrameSummary, HeadlessSimulator};
 pub use window::{
@@ -243,5 +247,102 @@ mod tests {
         let node = sim.find_node_by_label("Click Me").unwrap();
         sim.click_node(node);
         assert!(tapped.get());
+    }
+
+    #[test]
+    fn keybinding_chords_dnd_hot_reload_and_extended_accessibility_work() {
+        let mut reg = KeybindingRegistry::new();
+        reg.bind_str("Ctrl+K Ctrl+S", "open_shortcuts", KeyContext::Global)
+            .unwrap();
+        let toml = reg.to_toml_string();
+        let mut parsed = KeybindingRegistry::from_toml_str(&toml).unwrap();
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(
+            parsed.match_event(
+                &key_down(KeyCode::Character("k".into()), ctrl, None),
+                KeyContext::Global
+            ),
+            ChordMatch::PendingPrefix
+        );
+        assert_eq!(
+            parsed.match_event(
+                &key_down(KeyCode::Character("s".into()), ctrl, None),
+                KeyContext::Global
+            ),
+            ChordMatch::Command("open_shortcuts".into())
+        );
+
+        let dropped: Rc<std::cell::RefCell<Option<String>>> =
+            Rc::new(std::cell::RefCell::new(None));
+        let dr = dropped.clone();
+        let custom_ran = Rc::new(Cell::new(false));
+        let cr = custom_ran.clone();
+
+        struct DndView {
+            dr: Rc<std::cell::RefCell<Option<String>>>,
+            cr: Rc<Cell<bool>>,
+        }
+        impl View for DndView {
+            fn body(self, _cx: &mut rustui_core::Cx) -> impl View {
+                let d = self.dr;
+                let c = self.cr;
+                TestButton {
+                    label: "DropHere",
+                    on_tap: Rc::new(|| {}),
+                }
+                .accessibility_hint("Drops files onto target")
+                .accessibility_live(rustui_core::AccessibilityLive::Polite)
+                .accessibility_custom_action("ClearTarget", move || c.set(true))
+                .on_drop(move |ev| {
+                    if let rustui_core::DragPayload::Files(paths) = ev.payload {
+                        *d.borrow_mut() = Some(paths[0].display().to_string());
+                        return true;
+                    }
+                    false
+                })
+            }
+        }
+
+        let mut sim = HeadlessSimulator::new(DndView { dr, cr }, Size::new(240.0, 120.0));
+        let target = sim.find_node_by_label("DropHere").unwrap();
+        let tb = sim.node_bounds(target).unwrap();
+        sim.drop_files(
+            Point::new(tb.mid_x(), tb.mid_y()),
+            vec![std::path::PathBuf::from("/tmp/demo.rs")],
+        );
+        assert_eq!(dropped.borrow().as_deref(), Some("/tmp/demo.rs"));
+
+        let tree = sim.accessibility_tree();
+        let ak_node = tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == to_ak_id(target))
+            .map(|(_, n)| n)
+            .unwrap();
+        assert_eq!(ak_node.description(), Some("Drops files onto target"));
+        assert_eq!(ak_node.live(), Some(accesskit::Live::Polite));
+        assert!(sim.dispatch_accessibility_action(ActionRequest {
+            action: Action::CustomAction,
+            target_tree: TreeId::ROOT,
+            target_node: to_ak_id(target),
+            data: Some(accesskit::ActionData::CustomAction(0)),
+        }));
+        assert!(custom_ran.get());
+
+        // HotReloadHost replaces children cleanly.
+        let mut reloader = HotReloadHost::new();
+        let _diag = reloader.reload_view(
+            &sim.runtime,
+            sim.root,
+            TestButton {
+                label: "Reloaded",
+                on_tap: Rc::new(|| {}),
+            },
+        );
+        sim.step_frame();
+        assert!(sim.find_node_by_label("Reloaded").is_some());
     }
 }

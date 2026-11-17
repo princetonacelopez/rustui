@@ -517,6 +517,27 @@ impl GestureRecognizer {
                                 phase: PointerPhase::Up,
                             },
                         );
+                        let drag_payload = runtime.with_inner(|inner| {
+                            HitTester::ancestor_chain(runtime, captured)
+                                .into_iter()
+                                .find_map(|nid| {
+                                    inner
+                                        .nodes
+                                        .get(nid)
+                                        .and_then(|n| n.events.on_drag_payload.clone())
+                                })
+                        });
+                        if let Some(payload_fn) = drag_payload {
+                            let payload = runtime.enter(|| payload_fn());
+                            self.dispatch_drop(
+                                runtime,
+                                root,
+                                rustui_core::DropEvent {
+                                    position: event.position,
+                                    payload,
+                                },
+                            );
+                        }
                     } else if event.phase == PointerPhase::Up {
                         let hit = HitTester::hit_test(runtime, root, event.position);
                         if hit == Some(captured)
@@ -801,6 +822,336 @@ impl GestureRecognizer {
                 return;
             }
         }
+    }
+
+    /// Dispatches a file/text/custom drop event to the top-most `.on_drop(...)` handler under `event.position`.
+    pub fn dispatch_drop(
+        &self,
+        runtime: &Runtime,
+        root: NodeId,
+        event: rustui_core::DropEvent,
+    ) -> bool {
+        let Some(hit) = HitTester::hit_test(runtime, root, event.position) else {
+            return false;
+        };
+        for id in HitTester::ancestor_chain(runtime, hit) {
+            let cb = runtime
+                .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_drop.clone()));
+            if let Some(f) = cb
+                && runtime.enter(|| f(event.clone()))
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Single key stroke with modifiers (`Ctrl+K`, `Cmd/Ctrl+Shift+P`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyStroke {
+    pub key: KeyCode,
+    pub modifiers: Modifiers,
+}
+
+impl KeyStroke {
+    pub fn new(key: KeyCode, modifiers: Modifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut mods = Modifiers::NONE;
+        let mut key: Option<KeyCode> = None;
+        for part in spec.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => mods.ctrl = true,
+                "cmd" | "meta" | "super" => mods.meta = true,
+                "cmdorctrl" => mods.ctrl = true,
+                "alt" | "option" => mods.alt = true,
+                "shift" => mods.shift = true,
+                "enter" | "return" => key = Some(KeyCode::Enter),
+                "tab" => key = Some(KeyCode::Tab),
+                "space" => key = Some(KeyCode::Space),
+                "esc" | "escape" => key = Some(KeyCode::Escape),
+                "backspace" => key = Some(KeyCode::Backspace),
+                "delete" | "del" => key = Some(KeyCode::Delete),
+                "left" => key = Some(KeyCode::ArrowLeft),
+                "right" => key = Some(KeyCode::ArrowRight),
+                "up" => key = Some(KeyCode::ArrowUp),
+                "down" => key = Some(KeyCode::ArrowDown),
+                "home" => key = Some(KeyCode::Home),
+                "end" => key = Some(KeyCode::End),
+                other if other.starts_with('f') && other.len() <= 3 => {
+                    if let Ok(n) = other[1..].parse::<u8>() {
+                        key = Some(KeyCode::F(n));
+                    } else {
+                        key = Some(KeyCode::Character(other.to_owned()));
+                    }
+                }
+                other => {
+                    key = Some(KeyCode::Character(other.to_ascii_lowercase()));
+                }
+            }
+        }
+        key.map(|k| Self {
+            key: k,
+            modifiers: mods,
+        })
+        .ok_or_else(|| format!("invalid keystroke '{spec}'"))
+    }
+
+    pub fn matches_event(&self, ev: &KeyEvent) -> bool {
+        if self.modifiers.ctrl != ev.modifiers.ctrl
+            || self.modifiers.shift != ev.modifiers.shift
+            || self.modifiers.alt != ev.modifiers.alt
+            || self.modifiers.meta != ev.modifiers.meta
+        {
+            return false;
+        }
+        match (&self.key, &ev.key) {
+            (KeyCode::Character(a), KeyCode::Character(b)) => a.eq_ignore_ascii_case(b),
+            _ => self.key == ev.key,
+        }
+    }
+
+    pub fn format(&self) -> String {
+        let mut parts = Vec::new();
+        if self.modifiers.ctrl {
+            parts.push("Ctrl".to_owned());
+        }
+        if self.modifiers.alt {
+            parts.push("Alt".to_owned());
+        }
+        if self.modifiers.shift {
+            parts.push("Shift".to_owned());
+        }
+        if self.modifiers.meta {
+            parts.push("Meta".to_owned());
+        }
+        let k = match &self.key {
+            KeyCode::Character(c) => c.to_ascii_uppercase(),
+            KeyCode::Enter => "Enter".into(),
+            KeyCode::Tab => "Tab".into(),
+            KeyCode::Space => "Space".into(),
+            KeyCode::Escape => "Escape".into(),
+            KeyCode::Backspace => "Backspace".into(),
+            KeyCode::Delete => "Delete".into(),
+            KeyCode::ArrowLeft => "Left".into(),
+            KeyCode::ArrowRight => "Right".into(),
+            KeyCode::ArrowUp => "Up".into(),
+            KeyCode::ArrowDown => "Down".into(),
+            KeyCode::Home => "Home".into(),
+            KeyCode::End => "End".into(),
+            KeyCode::F(n) => format!("F{n}"),
+            other => format!("{other:?}"),
+        };
+        parts.push(k);
+        parts.join("+")
+    }
+}
+
+/// Single stroke or two-stroke key chord (`Ctrl+K Ctrl+S`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyChord {
+    pub strokes: Vec<KeyStroke>,
+}
+
+impl KeyChord {
+    pub fn single(stroke: KeyStroke) -> Self {
+        Self {
+            strokes: vec![stroke],
+        }
+    }
+
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut strokes = Vec::new();
+        for tok in spec.split_whitespace() {
+            strokes.push(KeyStroke::parse(tok)?);
+        }
+        if strokes.is_empty() || strokes.len() > 2 {
+            return Err(format!("key chord must have 1 or 2 strokes: '{spec}'"));
+        }
+        Ok(Self { strokes })
+    }
+
+    pub fn format(&self) -> String {
+        self.strokes
+            .iter()
+            .map(KeyStroke::format)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Optional focus/scope context restriction for a keybinding entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyContext {
+    #[default]
+    Global,
+    EditorFocused,
+    TerminalFocused,
+    PaletteClosed,
+}
+
+/// Bound shortcut mapping a [`KeyChord`] and [`KeyContext`] to a named command ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeybindingEntry {
+    pub chord: KeyChord,
+    pub command: String,
+    pub context: KeyContext,
+}
+
+/// Outcome returned when advancing the stateful chord matcher with a [`KeyEvent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChordMatch {
+    None,
+    PendingPrefix,
+    Command(String),
+}
+
+/// Registry resolving single shortcuts and multi-stroke chords (`Ctrl+K Ctrl+S`) with TOML persistence.
+#[derive(Debug, Clone, Default)]
+pub struct KeybindingRegistry {
+    bindings: Vec<KeybindingEntry>,
+    pending_first: Option<KeyStroke>,
+}
+
+impl KeybindingRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn bind(&mut self, chord: KeyChord, command: impl Into<String>, context: KeyContext) {
+        self.bindings.push(KeybindingEntry {
+            chord,
+            command: command.into(),
+            context,
+        });
+    }
+
+    pub fn bind_str(
+        &mut self,
+        chord_spec: &str,
+        command: impl Into<String>,
+        context: KeyContext,
+    ) -> Result<(), String> {
+        let chord = KeyChord::parse(chord_spec)?;
+        self.bind(chord, command, context);
+        Ok(())
+    }
+
+    pub fn entries(&self) -> &[KeybindingEntry] {
+        &self.bindings
+    }
+
+    pub fn match_event(&mut self, ev: &KeyEvent, active_ctx: KeyContext) -> ChordMatch {
+        if !ev.is_down {
+            return ChordMatch::None;
+        }
+        let ctx_ok =
+            |entry_ctx: KeyContext| entry_ctx == KeyContext::Global || entry_ctx == active_ctx;
+
+        if let Some(first) = self.pending_first.take() {
+            for entry in &self.bindings {
+                if ctx_ok(entry.context)
+                    && entry.chord.strokes.len() == 2
+                    && entry.chord.strokes[0] == first
+                    && entry.chord.strokes[1].matches_event(ev)
+                {
+                    return ChordMatch::Command(entry.command.clone());
+                }
+            }
+        }
+
+        // Check if this keystroke completes a 1-stroke binding or starts a 2-stroke chord.
+        for entry in &self.bindings {
+            if ctx_ok(entry.context)
+                && entry.chord.strokes.len() == 2
+                && entry.chord.strokes[0].matches_event(ev)
+            {
+                self.pending_first = Some(entry.chord.strokes[0].clone());
+                return ChordMatch::PendingPrefix;
+            }
+        }
+
+        for entry in &self.bindings {
+            if ctx_ok(entry.context)
+                && entry.chord.strokes.len() == 1
+                && entry.chord.strokes[0].matches_event(ev)
+            {
+                return ChordMatch::Command(entry.command.clone());
+            }
+        }
+
+        ChordMatch::None
+    }
+
+    /// Exports bindings as simple TOML tables (`[[bindings]]`).
+    pub fn to_toml_string(&self) -> String {
+        let mut out = String::new();
+        for b in &self.bindings {
+            let ctx = match b.context {
+                KeyContext::Global => "global",
+                KeyContext::EditorFocused => "editor",
+                KeyContext::TerminalFocused => "terminal",
+                KeyContext::PaletteClosed => "palette_closed",
+            };
+            out.push_str(&format!(
+                "[[bindings]]\nchord = \"{}\"\ncommand = \"{}\"\ncontext = \"{ctx}\"\n\n",
+                b.chord.format(),
+                b.command.replace('"', "\\\"")
+            ));
+        }
+        out
+    }
+
+    /// Parses `[[bindings]]` entries produced by [`KeybindingRegistry::to_toml_string`].
+    pub fn from_toml_str(src: &str) -> Result<Self, String> {
+        let mut reg = Self::new();
+        let mut chord: Option<String> = None;
+        let mut command: Option<String> = None;
+        let mut context = KeyContext::Global;
+        let flush = |reg: &mut Self,
+                     ch: &mut Option<String>,
+                     cmd: &mut Option<String>,
+                     ctx: KeyContext|
+         -> Result<(), String> {
+            if let (Some(c), Some(k)) = (ch.take(), cmd.take()) {
+                reg.bind_str(&c, k, ctx)?;
+            }
+            Ok(())
+        };
+
+        for raw in src.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line == "[[bindings]]" {
+                flush(&mut reg, &mut chord, &mut command, context)?;
+                context = KeyContext::Global;
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim();
+                let v = v.trim().trim_matches('"');
+                match k {
+                    "chord" => chord = Some(v.to_owned()),
+                    "command" => command = Some(v.to_owned()),
+                    "context" => {
+                        context = match v {
+                            "editor" => KeyContext::EditorFocused,
+                            "terminal" => KeyContext::TerminalFocused,
+                            "palette_closed" => KeyContext::PaletteClosed,
+                            _ => KeyContext::Global,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+        flush(&mut reg, &mut chord, &mut command, context)?;
+        Ok(reg)
     }
 }
 

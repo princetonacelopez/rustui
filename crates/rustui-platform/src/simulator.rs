@@ -107,6 +107,7 @@ impl HeadlessSimulator {
     pub fn step_frame(&mut self) -> FrameSummary {
         let frame_start = Instant::now();
         self.runtime.poll_tasks();
+        self.runtime.tick_timers(Instant::now());
         let (reactive_updates, rebuilt_nodes) = self.runtime.flush_reactive();
 
         let _ = self.runtime.tick_animations(Instant::now());
@@ -339,6 +340,24 @@ impl HeadlessSimulator {
     pub fn set_reduced_motion(&mut self, reduced: bool) -> FrameSummary {
         self.runtime.set_reduced_motion(reduced);
         self.step_frame()
+    }
+
+    /// Simulates dropping OS files onto `position`.
+    pub fn drop_files(&mut self, position: Point, paths: Vec<std::path::PathBuf>) -> FrameSummary {
+        self.gestures.dispatch_drop(
+            &self.runtime,
+            self.root,
+            rustui_core::DropEvent {
+                position,
+                payload: rustui_core::DragPayload::Files(paths),
+            },
+        );
+        self.step_frame()
+    }
+
+    /// Simulates dragging from a draggable node at `from` and dropping onto a drop target at `to`.
+    pub fn drag_and_drop(&mut self, from: Point, to: Point) -> FrameSummary {
+        self.drag(from, to)
     }
 
     /// Simulates a drag gesture from `from` to `to`.

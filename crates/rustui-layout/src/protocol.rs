@@ -9,7 +9,8 @@ use rustui_core::{
 };
 
 use crate::containers::{
-    GridLayout, HStackLayout, LazyVStackLayout, SpacerLayout, VStackLayout, ZStackLayout,
+    GridLayout, HStackLayout, LazyVStackLayout, SpacerLayout, VStackLayout, ViewThatFitsLayout,
+    ZStackLayout,
 };
 
 /// Interface implemented by text engines (such as `rustui-text`'s `ParleyTextMeasurer`)
@@ -207,6 +208,22 @@ impl ChildProxy<'_> {
         })
     }
 
+    /// Returns `(column_span, row_span)` metadata attached via `.grid_cell_columns(...)` / `.grid_cell_rows(...)`.
+    pub fn grid_span(&self) -> (usize, usize) {
+        self.engine.runtime().with_inner(|inner| {
+            inner
+                .nodes
+                .get(self.node_id)
+                .map(|n| {
+                    (
+                        n.layout_props.grid_column_span.max(1),
+                        n.layout_props.grid_row_span.max(1),
+                    )
+                })
+                .unwrap_or((1, 1))
+        })
+    }
+
     /// Resets this child's cached bounds to empty (used for offscreen pooled virtual list items).
     pub fn reset_bounds(&self) {
         self.engine.runtime().with_inner_mut(|inner| {
@@ -214,6 +231,21 @@ impl ChildProxy<'_> {
                 n.layout_cache.bounds = Rect::ZERO;
                 n.dirty
                     .remove(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT);
+            }
+        });
+    }
+
+    /// Recursively resets bounds to empty for unselected `ViewThatFits` candidates.
+    pub fn collapse_subtree(&self) {
+        self.engine.runtime().with_inner_mut(|inner| {
+            let mut stack = vec![self.node_id];
+            while let Some(id) = stack.pop() {
+                if let Some(n) = inner.nodes.get_mut(id) {
+                    n.layout_cache.bounds = Rect::ZERO;
+                    n.dirty
+                        .remove(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT);
+                    stack.extend(n.children.iter().copied());
+                }
             }
         });
     }
@@ -353,6 +385,8 @@ pub(crate) struct LayoutContext<'a> {
     pub(crate) direction: TextDirection,
     pub(crate) viewport: Size<f32>,
     pub(crate) laid_out_count: usize,
+    pub(crate) cache_hits: usize,
+    pub(crate) cache_misses: usize,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -387,9 +421,11 @@ impl<'a> LayoutContext<'a> {
             }
         });
         if let Some(size) = cached {
+            self.cache_hits += 1;
             return size;
         }
 
+        self.cache_misses += 1;
         self.laid_out_count += 1;
         let dir = self.resolve_direction(node_id);
 
@@ -564,7 +600,20 @@ impl<'a> LayoutContext<'a> {
                 clip_to_bounds,
             } => {
                 let inner_prop = Self::apply_props_to_proposal(&props, proposed);
-                let mut content_size = if let Some(cid) = child {
+                let mut content_size = if kind == "editorsurface" {
+                    Size::new(
+                        match inner_prop.width {
+                            Some(w) if w.is_finite() => w,
+                            Some(_) => 10_000.0,
+                            None => 480.0,
+                        },
+                        match inner_prop.height {
+                            Some(h) if h.is_finite() => h,
+                            Some(_) => 10_000.0,
+                            None => 320.0,
+                        },
+                    )
+                } else if let Some(cid) = child {
                     self.measure_node(cid, inner_prop)
                 } else {
                     let default_size = match kind {
@@ -574,6 +623,9 @@ impl<'a> LayoutContext<'a> {
                         "textfield" => Size::new(200.0, 36.0),
                         "securefield" => Size::new(200.0, 36.0),
                         "texteditor" => Size::new(320.0, 140.0),
+                        "editorsurface" => Size::new(480.0, 320.0),
+                        "progressview" => Size::new(160.0, 10.0),
+                        "gauge" => Size::new(160.0, 16.0),
                         _ => Size::new(80.0, 32.0),
                     };
                     let w = inner_prop
@@ -590,8 +642,17 @@ impl<'a> LayoutContext<'a> {
                 }
                 Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
-            NodeLayoutAction::Text { props, data } => {
+            NodeLayoutAction::Text { props, mut data } => {
                 let inner_prop = Self::apply_props_to_proposal(&props, proposed);
+                let text_scale = self.runtime.text_scale_factor();
+                if (text_scale - 1.0).abs() > f32::EPSILON {
+                    data.font.size *= text_scale;
+                    for span in &mut data.spans {
+                        if let Some(f) = &mut span.font {
+                            f.size *= text_scale;
+                        }
+                    }
+                }
                 let content_size = self.measurer.measure_text(&data, inner_prop.width);
                 Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
             }
@@ -667,14 +728,11 @@ impl<'a> LayoutContext<'a> {
                     }
                 });
                 let resolve_axis = |prop: Option<f32>, content: f32, scrolls: bool| -> f32 {
+                    if !scrolls {
+                        return content;
+                    }
                     match prop {
-                        Some(v) if v.is_infinite() => {
-                            if scrolls {
-                                10_000.0_f32.max(content)
-                            } else {
-                                content
-                            }
-                        }
+                        Some(v) if v.is_infinite() => 10_000.0_f32.max(content),
                         Some(v) => v,
                         None => content,
                     }
@@ -780,6 +838,9 @@ impl<'a> LayoutContext<'a> {
                         inner_prop.width.filter(|w| w.is_finite()).unwrap_or(120.0),
                         thickness,
                     ),
+                    ContainerKind::ViewThatFits => {
+                        ViewThatFitsLayout.size(inner_prop, &mut children)
+                    }
                     ContainerKind::CustomLayout => Size::ZERO,
                 };
                 Self::finalize_measured_size(&props, content_size, inner_prop, proposed)
@@ -1045,9 +1106,9 @@ impl<'a> LayoutContext<'a> {
             Leaf,
         }
 
-        let (offset, action) = self.runtime.with_inner_mut(|inner| {
+        let (offset, action, size_cb, geom_cb) = self.runtime.with_inner_mut(|inner| {
             let Some(n) = inner.nodes.get_mut(node_id) else {
-                return (Point::ZERO, PlaceAction::Hidden);
+                return (Point::ZERO, PlaceAction::Hidden, None, None);
             };
             let offset = n.layout_props.offset;
             let bounds = Rect::new(
@@ -1060,8 +1121,21 @@ impl<'a> LayoutContext<'a> {
             n.dirty
                 .remove(DirtyFlags::LAYOUT | DirtyFlags::DESCENDANT_LAYOUT);
 
+            let size_cb = if n.last_reported_size != Some(size) {
+                n.last_reported_size = Some(size);
+                n.events.on_size_change.clone().map(|f| (f, size))
+            } else {
+                None
+            };
+            let geom_cb = if n.last_reported_bounds != Some(bounds) {
+                n.last_reported_bounds = Some(bounds);
+                n.events.on_geometry.clone().map(|f| (f, bounds))
+            } else {
+                None
+            };
+
             if n.visual_props.hidden {
-                return (offset, PlaceAction::Hidden);
+                return (offset, PlaceAction::Hidden, size_cb, geom_cb);
             }
 
             let padding = n.layout_props.padding;
@@ -1105,8 +1179,15 @@ impl<'a> LayoutContext<'a> {
                 }
                 _ => PlaceAction::Leaf,
             };
-            (offset, act)
+            (offset, act, size_cb, geom_cb)
         });
+
+        if let Some((f, sz)) = size_cb {
+            f(sz);
+        }
+        if let Some((f, b)) = geom_cb {
+            f(b);
+        }
 
         let bounds = Rect::new(
             origin.x + offset.x,
@@ -1209,15 +1290,26 @@ impl<'a> LayoutContext<'a> {
                         .place(inner_bounds, &mut children);
                     }
                     ContainerKind::Fragment => {
-                        let mut y = inner_bounds.y;
-                        for i in 0..children.len() {
-                            let c_prop = Size::new(Some(inner_bounds.width), None);
-                            let sz = children.child(i).size(c_prop);
+                        if children.len() == 1 {
+                            let c_prop =
+                                Size::new(Some(inner_bounds.width), Some(inner_bounds.height));
                             children
-                                .child(i)
-                                .place(Point::new(inner_bounds.x, y), c_prop);
-                            y += sz.height;
+                                .child(0)
+                                .place(Point::new(inner_bounds.x, inner_bounds.y), c_prop);
+                        } else {
+                            let mut y = inner_bounds.y;
+                            for i in 0..children.len() {
+                                let c_prop = Size::new(Some(inner_bounds.width), None);
+                                let sz = children.child(i).size(c_prop);
+                                children
+                                    .child(i)
+                                    .place(Point::new(inner_bounds.x, y), c_prop);
+                                y += sz.height;
+                            }
                         }
+                    }
+                    ContainerKind::ViewThatFits => {
+                        ViewThatFitsLayout.place(inner_bounds, &mut children);
                     }
                     ContainerKind::Spacer { .. }
                     | ContainerKind::Divider { .. }
@@ -1322,16 +1414,22 @@ impl LayoutEngine {
             direction: dir,
             viewport,
             laid_out_count: 0,
+            cache_hits: 0,
+            cache_misses: 0,
         };
         let proposed = Size::new(Some(viewport.width), Some(viewport.height));
         runtime.enter(|| {
             ctx.place_node(root, Point::ZERO, proposed);
         });
         let laid_out = ctx.laid_out_count;
+        let cache_hits = ctx.cache_hits;
+        let cache_misses = ctx.cache_misses;
 
         let elapsed = start.elapsed();
         runtime.with_inner_mut(|inner| {
             inner.scheduler.metrics.laid_out_nodes = laid_out;
+            inner.scheduler.metrics.layout_cache_hits = cache_hits;
+            inner.scheduler.metrics.layout_cache_misses = cache_misses;
             inner.scheduler.metrics.layout_time = elapsed;
         });
 

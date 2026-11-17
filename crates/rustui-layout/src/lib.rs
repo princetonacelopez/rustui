@@ -5,7 +5,7 @@ pub mod protocol;
 
 pub use containers::{
     GridLayout, HStackLayout, LazyVStackLayout, ScrollViewLayout, SpacerLayout, VStackLayout,
-    ZStackLayout,
+    ViewThatFitsLayout, ZStackLayout,
 };
 pub use protocol::{
     ChildProxy, Children, CustomLayoutBox, DefaultTextMeasurer, Layout, LayoutEngine, TextMeasurer,
@@ -346,5 +346,64 @@ mod tests {
 
         let snapped = snap_to_pixel(Rect::new(10.3, 20.7, 50.25, 19.8), 2.0);
         assert_eq!(snapped, Rect::new(10.5, 20.5, 50.0, 20.0));
+    }
+
+    #[test]
+    fn grid_cell_spans_and_view_that_fits_choose_fitting_candidate() {
+        let rt = Runtime::new();
+        let grid = rt.alloc_node(
+            NodeKind::Container(ContainerKind::Grid {
+                columns: vec![GridTrack::Fixed(50.0), GridTrack::Fixed(50.0)],
+                h_spacing: 10.0,
+                v_spacing: 8.0,
+            }),
+            None,
+        );
+        let wide = make_box(&rt, 110.0, 20.0, Some(grid));
+        rt.with_inner_mut(|inner| {
+            inner
+                .nodes
+                .get_mut(wide)
+                .unwrap()
+                .layout_props
+                .grid_column_span = 2;
+        });
+        let a = make_box(&rt, 50.0, 20.0, Some(grid));
+        let b = make_box(&rt, 50.0, 20.0, Some(grid));
+        rt.attach_child(grid, wide);
+        rt.attach_child(grid, a);
+        rt.attach_child(grid, b);
+
+        let engine = LayoutEngine::new();
+        let mut measurer = DefaultTextMeasurer;
+        engine.layout(&rt, grid, Size::new(200.0, 200.0), &mut measurer);
+        rt.with_inner(|inner| {
+            assert_eq!(
+                inner.nodes.get(wide).unwrap().bounds(),
+                Rect::new(0.0, 0.0, 110.0, 20.0)
+            );
+            assert_eq!(
+                inner.nodes.get(a).unwrap().bounds(),
+                Rect::new(0.0, 28.0, 50.0, 20.0)
+            );
+            assert_eq!(
+                inner.nodes.get(b).unwrap().bounds(),
+                Rect::new(60.0, 28.0, 50.0, 20.0)
+            );
+        });
+
+        let vtf = rt.alloc_node(NodeKind::Container(ContainerKind::ViewThatFits), None);
+        let wide_cand = make_box(&rt, 300.0, 24.0, Some(vtf));
+        let compact_cand = make_box(&rt, 80.0, 24.0, Some(vtf));
+        rt.attach_child(vtf, wide_cand);
+        rt.attach_child(vtf, compact_cand);
+        engine.layout(&rt, vtf, Size::new(150.0, 40.0), &mut measurer);
+        rt.with_inner(|inner| {
+            assert_eq!(inner.nodes.get(wide_cand).unwrap().bounds(), Rect::ZERO);
+            assert_eq!(
+                inner.nodes.get(compact_cand).unwrap().bounds(),
+                Rect::new(0.0, 0.0, 80.0, 24.0)
+            );
+        });
     }
 }

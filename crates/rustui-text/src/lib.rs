@@ -4,7 +4,10 @@ pub mod editor;
 pub mod ime;
 pub mod shaping;
 
-pub use editor::{EditableText, Selection, TextBuffer};
+pub use editor::{
+    AnchorBias, AnchorId, DecorationKind, EditableText, EditorDecoration, FoldRange,
+    GutterDiffKind, LineDiffMarker, Selection, SyntaxTokenSpan, TextBuffer,
+};
 pub use ime::ImeState;
 pub use shaping::{
     ParleyTextMeasurer, ParleyTextPainter, RichText, ShapedLineMetrics, ShapedText, TextSpan,
@@ -154,5 +157,41 @@ mod tests {
         ime.set_preedit("zhongwen".into(), Some((8, 8)), caret);
         ime.commit("中文🎉", &mut buf);
         assert_eq!(buf.text(), "Start: 日本語中文🎉");
+
+        // Replacing selection via IME + edge-flipped candidate box
+        buf.set_selection(Selection::range(0, 5));
+        ime.set_preedit("begin".into(), None, Rect::new(470.0, 380.0, 2.0, 18.0));
+        ime.commit("Begin", &mut buf);
+        assert!(buf.text().starts_with("Begin: "));
+        let clamped = ime.clamped_candidate_rect(
+            rustui_core::Size::new(500.0, 400.0),
+            rustui_core::Size::new(120.0, 80.0),
+        );
+        assert!(clamped.max_x() <= 500.0 && clamped.y < 380.0);
+    }
+
+    #[test]
+    fn multicursor_anchors_utf16_and_bracket_matching_work() {
+        let mut buf = TextBuffer::new("let a = (1 + 2);\nlet b = (3 + 4);");
+        let anchor = buf.create_anchor(16, AnchorBias::Right);
+        assert_eq!(buf.find_matching_bracket(8), Some(14));
+
+        // UTF-16 coordinates on emoji line.
+        let mut ubuf = TextBuffer::new("a🚀b\nc");
+        assert_eq!(ubuf.byte_to_utf16_line_col(5), (0, 3));
+        assert_eq!(ubuf.utf16_line_col_to_byte(0, 3), 5);
+        ubuf.clear_secondary_cursors();
+
+        // Multi-cursor insertion & atomic undo.
+        buf.set_selection(Selection::collapsed(4));
+        buf.add_cursor_below();
+        assert_eq!(buf.all_selections().len(), 2);
+        buf.insert("val_");
+        assert_eq!(buf.text(), "let val_a = (1 + 2);\nlet val_b = (3 + 4);");
+        // Both cursors shifted the anchor originally at byte 16 by +4 bytes before it (Wait: line 1 +4, line 2 after 16!).
+        assert_eq!(buf.resolve_anchor(anchor), Some(20));
+
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "let a = (1 + 2);\nlet b = (3 + 4);");
     }
 }

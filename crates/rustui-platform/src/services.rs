@@ -167,6 +167,32 @@ impl Platform for DesktopPlatform {
     }
 }
 
+/// Host managing hot-reload view replacements while preserving compatible `HookSlot` state values.
+#[derive(Debug, Default)]
+pub struct HotReloadHost {
+    pub reload_count: u64,
+    pub last_diagnostics: Vec<String>,
+}
+
+impl HotReloadHost {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Rebuilds `new_view` into `container_id` while preserving compatible `HookSlot` state values.
+    pub fn reload_view<V: rustui_core::View>(
+        &mut self,
+        runtime: &rustui_core::Runtime,
+        container_id: rustui_core::NodeId,
+        new_view: V,
+    ) -> Vec<String> {
+        let diag = runtime.reload_subtree(container_id, |bcx| new_view.build_node(bcx));
+        self.reload_count += 1;
+        self.last_diagnostics = diag.clone();
+        diag
+    }
+}
+
 /// Active Linux/macOS/Windows windowing & IME diagnostics for `rustui doctor`.
 #[derive(Debug, Clone)]
 pub struct PlatformCapabilities {

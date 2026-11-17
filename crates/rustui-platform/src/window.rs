@@ -322,6 +322,7 @@ impl WindowManager {
 
     fn redraw_window(&mut self, window_id: WindowId) {
         self.runtime.poll_tasks();
+        self.runtime.tick_timers(Instant::now());
         self.runtime.flush_reactive();
         let _ = self.runtime.tick_animations(Instant::now());
 
@@ -713,6 +714,19 @@ impl ApplicationHandler<AppEvent> for WindowManager {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw_window(window_id);
+            }
+            WindowEvent::DroppedFile(path) => {
+                if let Some(win) = self.windows.get_mut(&window_id) {
+                    win.gestures.dispatch_drop(
+                        &self.runtime,
+                        win.root,
+                        rustui_core::DropEvent {
+                            position: win.cursor_pos,
+                            payload: rustui_core::DragPayload::Files(vec![path]),
+                        },
+                    );
+                    win.window.request_redraw();
+                }
             }
             _ => {}
         }
