@@ -10,32 +10,41 @@ pub use rustui_widgets as widgets;
 pub mod prelude {
     pub use crate::App;
     pub use rustui_core::{
-        AccessibilityRole, Alignment, Animation, AnyView, Binding, BuildCx, Color, ContentMode,
-        CornerRadii, Cx, DragEvent, Edge, Edges, EffectHandle, EmptyView, ForEach, Frame,
-        GridTrack, HorizontalAlignment, If, KeyCode, KeyEvent, Memo, Modifiers, NodeId, Observable,
-        PinchEvent, Point, PointerButton, PointerEvent, PointerPhase, Primitive, Rect, Runtime,
-        ScrollEvent, SemanticColor, Size, State, Switch, TextDirection, ThemePalette, Transition,
-        VerticalAlignment, View, ViewExt, ViewSequence, impl_observable, rustui_check_hooks,
-        with_animation,
+        AccessibilityLive, AccessibilityRole, Alignment, Animation, AnyView, AsyncExecutor,
+        Binding, BuildCx, Color, ContentMode, CornerRadii, Cx, DragEvent, DragPayload, DropEvent,
+        Edge, Edges, EffectHandle, EmptyView, ForEach, Frame, GridTrack, HorizontalAlignment, If,
+        KeyCode, KeyEvent, Memo, Modifiers, NodeId, Observable, ObservableModel, PinchEvent, Point,
+        PointerButton, PointerEvent, PointerPhase, Primitive, Rect, Resource, ResourceState,
+        Runtime, SafeAreaInsets, ScrollEvent, SemanticColor, Size, State, Switch, TextDirection,
+        ThemePalette, TimerId, Transition, VerticalAlignment, View, ViewExt, ViewSequence,
+        impl_observable, preview, rustui_check_hooks, with_animation,
     };
     pub use rustui_layout::{ChildProxy, Children, Layout, LayoutEngine};
     pub use rustui_platform::{
-        DesktopPlatform, FrameSummary, HeadlessSimulator, Platform, SystemTheme, WindowOptions,
-        detect_platform_capabilities, detect_reduced_motion, detect_system_theme,
+        ChordMatch, DesktopPlatform, FileDialogOptions, FrameSummary, HeadlessSimulator,
+        HotReloadHost, KeyChord, KeyContext, KeyStroke, KeybindingEntry, KeybindingRegistry,
+        Platform, SystemTheme, WindowOptions, detect_platform_capabilities, detect_reduced_motion,
+        detect_system_theme,
     };
     pub use rustui_render::{
-        DisplayList, FontBlob, GradientKind, GradientStop, InspectorOverlay, PathOp,
-        ResourceLoader, include_asset,
+        DisplayList, FontBlob, GradientKind, GradientStop, InspectorFrameSnapshot,
+        InspectorNodeSnapshot, InspectorOverlay, InspectorServer, PathOp, ResourceLoader,
+        export_perfetto_trace, include_asset,
     };
     pub use rustui_text::{
-        EditableText, ImeState, RichText, Selection, TextBuffer, TextSpan, TextSystem,
+        AnchorBias, AnchorId, DecorationKind, EditableText, EditorDecoration, FoldRange,
+        GutterDiffKind, ImeState, LineDiffMarker, RichText, Selection, SyntaxTokenSpan, TextBuffer,
+        TextSpan, TextSystem,
     };
     pub use rustui_widgets::{
-        Button, ButtonStyle, Canvas, Checkbox, CustomLayoutView, Divider, Font, Grid, HStack,
-        Image, LazyVStack, List, ListStyle, Menu, MenuItem, NavigationPage, NavigationStack,
-        Picker, Popover, ScrollView, SecureField, Shader, Sheet, Slider, Spacer, SplitView,
-        TabItem, TabView, Table, TableColumn, Text, TextEditor, TextField, Theme, Toggle,
-        ToggleStyle, Toolbar, Tree, TreeItemData, VStack, ZStack, format_virtual_row_text, hstack,
+        Alert, AlertButton, Button, ButtonStyle, Canvas, Checkbox, CommandItem, CommandPalette,
+        ConfirmationDialog, CustomLayoutView, DisclosureGroup, Divider, EditorBufferState,
+        EditorSurface, FileDialog, Font, Gauge, Grid, HStack, Image, LazyVStack, List, ListStyle,
+        Menu, MenuItem, NavigationPage, NavigationStack, OutlineGroup, Picker, Popover,
+        ProgressView, ScrollView, SecureField, Shader, Sheet, Slider, Spacer, SplitView, StatusBar,
+        TabBar, TabBarItem, TabItem, TabView, Table, TableColumn, TerminalLine, TerminalLineTone,
+        TerminalView, Text, TextEditor, TextField, Theme, Toggle, ToggleStyle, Toolbar, Tree,
+        TreeItemData, VStack, ViewThatFits, WidgetViewExt, ZStack, format_virtual_row_text, hstack,
         vstack, zstack,
     };
 }

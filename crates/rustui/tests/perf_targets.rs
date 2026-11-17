@@ -146,3 +146,86 @@ fn terminal_grid_200x60_emits_within_60fps_budget() {
         elapsed
     );
 }
+
+#[test]
+fn v02_large_rope_inspector_and_perfetto_targets() {
+    use std::io::Read;
+    use std::net::TcpStream;
+
+    // 1. Multi-megabyte rope TextBuffer open + mid-buffer edit + bracket match latency
+    let chunk = "fn item_sample(idx: usize) { let total = idx + 42; }\n";
+    let large_src = chunk.repeat(80_000); // ~4.2 MB, 80,000 lines
+    let t_open = Instant::now();
+    let mut buf = TextBuffer::new(&large_src);
+    let open_elapsed = t_open.elapsed();
+    assert_eq!(buf.line_count(), 80_001);
+    assert!(
+        open_elapsed.as_secs_f64() * 1000.0 < 250.0,
+        "opening 80k-line rope took {:?}",
+        open_elapsed
+    );
+
+    let mid = buf.line_col_to_byte(40_000, 3);
+    buf.set_selection(Selection::collapsed(mid));
+    let t_edit = Instant::now();
+    buf.insert("/* patched */ ");
+    buf.delete_backward();
+    let brace_pos = buf.line_col_to_byte(40_000, 27);
+    let _matched = buf.find_matching_bracket(brace_pos);
+    let edit_elapsed = t_edit.elapsed();
+    assert!(
+        edit_elapsed.as_secs_f64() * 1000.0 < 16.0,
+        "editing middle of 80k-line rope took {:?}",
+        edit_elapsed
+    );
+
+    // 2. InspectorServer live JSON telemetry + Perfetto export
+    let server = InspectorServer::bind(0).expect("bind ephemeral inspector port");
+    let addr = server.local_addr();
+    let snap = InspectorFrameSnapshot {
+        root_id: Some("NodeId(1)".into()),
+        selected_node: None,
+        node_count: 1,
+        state_count: 1,
+        memo_count: 0,
+        metrics: rustui::core::FrameMetrics {
+            frame_number: 7,
+            signal_update_time: std::time::Duration::from_micros(220),
+            layout_time: std::time::Duration::from_micros(450),
+            paint_time: std::time::Duration::from_micros(380),
+            reactive_updates: 2,
+            laid_out_nodes: 12,
+            layout_cache_hits: 40,
+            layout_cache_misses: 4,
+            fixed_boundary_stops: 2,
+            paint_commands: 64,
+            ..Default::default()
+        },
+        dirty_regions: vec![Rect::new(0.0, 0.0, 100.0, 40.0)],
+        nodes: vec![InspectorNodeSnapshot {
+            id: "NodeId(1)".into(),
+            parent: None,
+            kind: "VStack".into(),
+            label: Some("PerfRoot".into()),
+            bounds: Rect::new(0.0, 0.0, 800.0, 600.0),
+            hidden: false,
+            focused: false,
+            source_file: Some("src/main.rs".into()),
+            source_line: Some(42),
+            source_col: Some(9),
+            children: vec![],
+        }],
+    };
+    server.publish_and_poll(&snap);
+    let mut client = TcpStream::connect(addr).expect("connect inspector");
+    let _ = std::io::Write::write_all(&mut client, b"GET /\n");
+    server.publish_and_poll(&snap);
+    let mut resp = String::new();
+    let _ = client.read_to_string(&mut resp);
+    assert!(resp.contains("\"PerfRoot\""));
+    assert!(resp.contains("\"layout_cache_hits\":40"));
+
+    let trace = export_perfetto_trace(&snap.metrics);
+    assert!(trace.contains("\"traceEvents\""));
+    assert!(trace.contains("\"signal_flush\""));
+}

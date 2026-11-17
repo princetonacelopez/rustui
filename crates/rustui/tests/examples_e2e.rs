@@ -2101,3 +2101,200 @@ fn e2e_touch_gestures_and_reduced_motion() {
         "enabling reduced motion must flush active animations immediately"
     );
 }
+
+#[test]
+fn e2e_v02_gallery_and_text_scaling() {
+    #[derive(Observable, Clone, Default)]
+    struct ShellModel {
+        split_ratio: f32,
+        nav_collapsed: bool,
+        active_tab: usize,
+        palette_open: bool,
+        alert_open: bool,
+        editor: EditorBufferState,
+        tabs: Vec<TabBarItem>,
+    }
+
+    struct V02Shell;
+    impl View for V02Shell {
+        fn body(self, cx: &mut Cx) -> impl View {
+            let model = cx.model(ShellModel {
+                split_ratio: 0.25,
+                nav_collapsed: false,
+                active_tab: 0,
+                palette_open: false,
+                alert_open: false,
+                editor: EditorBufferState::from_text("fn alpha() {}\nfn beta() {}\n"),
+                tabs: vec![
+                    TabBarItem::new("a", "alpha.rs").pinned(true),
+                    TabBarItem::new("b", "beta.rs"),
+                ],
+            });
+            let theme = Theme::dark();
+            let cmds = vec![CommandItem::new(
+                "go.b",
+                "Switch to Beta",
+                "Ctrl+2",
+                move || {
+                    model.set_active_tab(1);
+                },
+            )];
+            let nav = VStack::new(
+                8,
+                (Text::new("Navigator").font(Font::headline()), Spacer::new()),
+            )
+            .padding(10)
+            .frame(
+                Frame::new()
+                    .max_width(f32::INFINITY)
+                    .max_height(f32::INFINITY),
+            );
+
+            let t_alert = theme.clone();
+            let main_pane = VStack::new(
+                0,
+                (
+                    TabBar::new(model.tabs_binding(), model.active_tab_binding()),
+                    Switch::new(move || model.active_tab())
+                        .case(0usize, move || {
+                            EditorSurface::new(model.editor_binding())
+                                .accessibility_label("Gallery Editor")
+                        })
+                        .default(move || {
+                            VStack::new(
+                                10,
+                                (
+                                    ProgressView::determinate(0.5).label("Indexing"),
+                                    Gauge::new("Load", 40.0, 0.0, 100.0),
+                                    Button::new("Trigger Alert", move || {
+                                        model.set_alert_open(true)
+                                    })
+                                    .style(ButtonStyle::primary(&t_alert)),
+                                    Spacer::new(),
+                                ),
+                            )
+                            .padding(14)
+                        }),
+                ),
+            )
+            .frame(
+                Frame::new()
+                    .max_width(f32::INFINITY)
+                    .max_height(f32::INFINITY),
+            );
+
+            let t_tb = theme.clone();
+            Alert::new(
+                model.alert_open_binding(),
+                "Modal Check",
+                "Alert dialog Role verification",
+                vec![AlertButton::new("OK", || {})],
+                CommandPalette::new(
+                    model.palette_open_binding(),
+                    cmds,
+                    VStack::new(
+                        0,
+                        (
+                            Toolbar::new((
+                                Text::new("RustUI 0.2").font(Font::headline()),
+                                Spacer::new(),
+                                Button::new("Palette", move || model.set_palette_open(true))
+                                    .style(ButtonStyle::primary(&t_tb)),
+                            )),
+                            SplitView::horizontal(model.split_ratio_binding(), nav, main_pane)
+                                .collapsed(model.nav_collapsed_binding())
+                                .frame(
+                                    Frame::new()
+                                        .max_width(f32::INFINITY)
+                                        .max_height(f32::INFINITY),
+                                ),
+                            StatusBar::new((
+                                Text::new(move || model.editor().status_summary()),
+                                Spacer::new(),
+                                Text::new("UTF-8"),
+                            )),
+                        ),
+                    )
+                    .frame(
+                        Frame::new()
+                            .max_width(f32::INFINITY)
+                            .max_height(f32::INFINITY),
+                    ),
+                ),
+            )
+        }
+    }
+
+    let mut sim = HeadlessSimulator::new(V02Shell, Size::new(1100.0, 720.0));
+    sim.step_frame();
+    assert_layout_invariants(&sim, "v02 shell initial");
+
+    let sb_b = sim
+        .node_bounds(sim.find_node_by_label("Status Bar").expect("Status Bar"))
+        .expect("sb bounds");
+    let ed_id = sim
+        .find_node_by_label("Gallery Editor")
+        .expect("Gallery Editor");
+    let ed_b = sim.node_bounds(ed_id).expect("ed bounds");
+    assert!(
+        sb_b.max_y() >= 718.0 && sb_b.max_y() <= 721.0,
+        "StatusBar must anchor at bottom of viewport (got {sb_b:?})"
+    );
+    assert!(
+        ed_b.height > 400.0,
+        "EditorSurface must fill remaining height cleanly (got {ed_b:?})"
+    );
+
+    // Multi-cursor typing in EditorSurface
+    sim.click_node(ed_id);
+    sim.type_text("//");
+    sim.press_key(
+        KeyCode::ArrowDown,
+        Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Modifiers::NONE
+        },
+    );
+    sim.type_text("*");
+    let ak_editor = sim.accessibility_tree();
+    assert!(
+        ak_editor
+            .nodes
+            .iter()
+            .any(|(_, n)| n.role() == Role::Status),
+        "StatusBar should expose AccessKit Status role"
+    );
+
+    // CommandPalette opens and executes tab switch -> reveals Gauge (Meter) & Alert (AlertDialog)
+    let pal_btn = sim.find_node_by_label("Palette").expect("Palette button");
+    sim.click_node(pal_btn);
+    let cmd_item = sim
+        .find_node_by_label("Switch to Beta   [Ctrl+2]")
+        .expect("command item");
+    sim.click_node(cmd_item);
+
+    let alert_btn = sim
+        .find_node_by_label("Trigger Alert")
+        .expect("Trigger Alert button");
+    sim.click_node(alert_btn);
+    let ak_alert = sim.accessibility_tree();
+    assert!(
+        ak_alert.nodes.iter().any(|(_, n)| n.role() == Role::Meter),
+        "Gauge should expose AccessKit Meter role"
+    );
+    assert!(
+        ak_alert
+            .nodes
+            .iter()
+            .any(|(_, n)| n.role() == Role::AlertDialog),
+        "Alert should expose AccessKit AlertDialog role"
+    );
+    let ok_btn = sim.find_node_by_label("OK").expect("OK button");
+    sim.click_node(ok_btn);
+
+    // 200% text scaling check
+    sim.runtime.set_text_scale_factor(2.0);
+    sim.step_frame();
+    assert_layout_invariants(&sim, "v02 shell 200% scale");
+}

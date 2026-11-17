@@ -9,7 +9,7 @@ use rustui_core::{
     ControlNodeData, CornerRadii, Cx, DirtyFlags, EmptyView, FontSpec, Frame, GridTrack,
     HorizontalAlignment, ImageNodeData, ImageSourceData, IntoPx, IntoTextSource, KeyCode, NodeId,
     NodeKind, Point, Primitive, Rect, ShaderNodeData, TextNodeData, TextSource, TruncationMode,
-    VerticalAlignment, View, ViewSequence,
+    VerticalAlignment, View, ViewExt, ViewSequence,
 };
 use rustui_layout::{CustomLayoutBox, Layout};
 use rustui_render::DisplayList;
@@ -915,4 +915,315 @@ macro_rules! zstack {
     ($($child:expr),* $(,)?) => {
         $crate::ZStack::new(($($child,)*))
     };
+}
+
+/// Determinate or indeterminate progress bar (`ProgressView`).
+#[derive(Debug, Clone)]
+pub struct ProgressView {
+    progress: Option<f32>,
+    label: Option<String>,
+}
+
+impl ProgressView {
+    pub fn determinate(value: f32) -> Self {
+        Self {
+            progress: Some(value.clamp(0.0, 1.0)),
+            label: None,
+        }
+    }
+
+    pub fn indeterminate() -> Self {
+        Self {
+            progress: None,
+            label: None,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+}
+
+impl Primitive for ProgressView {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let theme = resolve_theme(cx);
+        let track_col = if theme.uses_default_palette() {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
+        let fill_col = if theme.uses_default_palette() {
+            Color::accent()
+        } else {
+            theme.colors.accent
+        };
+        let pct = self.progress;
+        let label = self.label.unwrap_or_else(|| match pct {
+            Some(p) => format!("{:.0}%", p * 100.0),
+            None => "Busy".into(),
+        });
+
+        let root = cx.alloc_node(NodeKind::Control(rustui_core::ControlNodeData {
+            kind: "progressview",
+            value_f32: pct,
+            value_text: Some(label.clone()),
+            ..Default::default()
+        }));
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(n) = inner.nodes.get_mut(root) {
+                n.accessibility.role = AccessibilityRole::ProgressIndicator;
+                n.accessibility.label = Some(label);
+                n.layout_props.frame = Some(Frame::new().width(180.0).height(8.0));
+            }
+        });
+        let bar = Canvas::new(move |rect, dl| {
+            dl.fill_rounded_rect(
+                rect,
+                CornerRadii::all(rect.height * 0.5),
+                track_col.with_alpha(0.45),
+            );
+            let (fill_x, fill_w) = match pct {
+                Some(p) => (rect.x, (rect.width * p).max(0.0)),
+                None => (rect.x + rect.width * 0.2, rect.width * 0.4),
+            };
+            if fill_w > 0.0 {
+                dl.fill_rounded_rect(
+                    Rect::new(fill_x, rect.y, fill_w, rect.height),
+                    CornerRadii::all(rect.height * 0.5),
+                    fill_col,
+                );
+            }
+        })
+        .frame(
+            Frame::new()
+                .max_width(f32::INFINITY)
+                .max_height(f32::INFINITY),
+        )
+        .build_node(cx);
+        cx.runtime.attach_child(root, bar);
+        root
+    }
+}
+
+impl View for ProgressView {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        EmptyView
+    }
+
+    fn build_node(self, cx: &mut BuildCx) -> NodeId {
+        Primitive::build(self, cx)
+    }
+}
+
+/// Accessible meter / gauge control (`Gauge`).
+#[derive(Debug, Clone)]
+pub struct Gauge {
+    label: String,
+    value: f32,
+    min: f32,
+    max: f32,
+}
+
+impl Gauge {
+    pub fn new(label: impl Into<String>, value: f32, min: f32, max: f32) -> Self {
+        Self {
+            label: label.into(),
+            value,
+            min,
+            max: max.max(min + 0.0001),
+        }
+    }
+}
+
+impl View for Gauge {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        let norm = ((self.value - self.min) / (self.max - self.min)).clamp(0.0, 1.0);
+        VStack::new(
+            4,
+            (
+                HStack::new(
+                    8,
+                    (
+                        Text::new(self.label.clone()).font(Font::caption()),
+                        Spacer::new(),
+                        Text::new(format!("{:.0}%", norm * 100.0))
+                            .font(Font::caption())
+                            .color(Color::secondary()),
+                    ),
+                ),
+                ProgressView::determinate(norm).label(self.label),
+            ),
+        )
+        .accessibility_role(AccessibilityRole::Meter)
+    }
+}
+
+/// Adaptive container picking the first child view whose ideal size fits within the available space.
+#[derive(Debug)]
+pub struct ViewThatFits<C: ViewSequence> {
+    children: C,
+}
+
+impl<C: ViewSequence> ViewThatFits<C> {
+    pub fn new(children: C) -> Self {
+        Self { children }
+    }
+}
+
+impl<C: ViewSequence> Primitive for ViewThatFits<C> {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let node = cx.alloc_node(NodeKind::Container(ContainerKind::ViewThatFits));
+        self.children.build_all(cx, node);
+        node
+    }
+}
+
+impl<C: ViewSequence> View for ViewThatFits<C> {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        EmptyView
+    }
+
+    fn build_node(self, cx: &mut BuildCx) -> NodeId {
+        Primitive::build(self, cx)
+    }
+}
+
+/// Aligned `.overlay_aligned` / `.background_aligned` view extension helpers.
+pub trait WidgetViewExt: View + Sized {
+    fn overlay_aligned<O: View>(self, alignment: Alignment, overlay: O) -> ZStack<(Self, O)> {
+        ZStack::new((self, overlay)).alignment(alignment)
+    }
+
+    fn background_aligned<B: View>(self, alignment: Alignment, background: B) -> ZStack<(B, Self)> {
+        ZStack::new((background, self)).alignment(alignment)
+    }
+}
+
+impl<V: View> WidgetViewExt for V {}
+
+/// Severity/category tone for lines in [`TerminalView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TerminalLineTone {
+    Prompt,
+    #[default]
+    Output,
+    Success,
+    Accent,
+    Error,
+}
+
+impl TerminalLineTone {
+    pub fn color(self) -> Color {
+        match self {
+            Self::Prompt => Color::from_hex(0x38bdf8),
+            Self::Output => Color::from_hex(0xe2e8f0),
+            Self::Success => Color::from_hex(0x4ade80),
+            Self::Accent => Color::from_hex(0xc084fc),
+            Self::Error => Color::from_hex(0xf87171),
+        }
+    }
+}
+
+/// Single output line displayed inside [`TerminalView`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalLine {
+    pub id: u64,
+    pub text: String,
+    pub tone: TerminalLineTone,
+}
+
+/// Embeddable terminal widget with monospace scrollback and interactive command entry.
+pub struct TerminalView {
+    lines: Binding<Vec<TerminalLine>>,
+    on_command: Rc<dyn Fn(&str)>,
+    prompt_prefix: String,
+}
+
+impl std::fmt::Debug for TerminalView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminalView")
+            .field("prompt_prefix", &self.prompt_prefix)
+            .finish()
+    }
+}
+
+impl TerminalView {
+    pub fn new(lines: Binding<Vec<TerminalLine>>, on_command: impl Fn(&str) + 'static) -> Self {
+        Self {
+            lines,
+            on_command: Rc::new(on_command),
+            prompt_prefix: "❯".into(),
+        }
+    }
+
+    pub fn prompt(mut self, prefix: impl Into<String>) -> Self {
+        self.prompt_prefix = prefix.into();
+        self
+    }
+}
+
+impl View for TerminalView {
+    fn body(self, cx: &mut Cx) -> impl View {
+        let draft = cx.state(String::new());
+        let lines = self.lines;
+        let on_cmd = self.on_command;
+        let submit = move || {
+            let cmd = draft.get_untracked();
+            if !cmd.trim().is_empty() {
+                on_cmd(cmd.trim());
+                draft.set(String::new());
+            }
+        };
+        let submit_btn = submit.clone();
+
+        VStack::new(
+            6,
+            (
+                crate::collections::ScrollView::vertical(
+                    VStack::new(
+                        4,
+                        rustui_core::ForEach::new(
+                            move || lines.get(),
+                            |l| l.id,
+                            |l| {
+                                Text::new(l.text)
+                                    .font(Font::monospace())
+                                    .color(l.tone.color())
+                            },
+                        ),
+                    )
+                    .alignment(HorizontalAlignment::Leading)
+                    .padding(10)
+                    .frame(
+                        Frame::new()
+                            .max_width(f32::INFINITY)
+                            .alignment(Alignment::TOP_LEADING),
+                    ),
+                )
+                .frame(
+                    Frame::new()
+                        .max_width(f32::INFINITY)
+                        .max_height(f32::INFINITY),
+                )
+                .background(Color::from_hex(0x0b1120))
+                .border(1, Color::from_hex(0x1e293b))
+                .corner_radius(6),
+                HStack::new(
+                    8,
+                    (
+                        Text::new(self.prompt_prefix)
+                            .font(Font::monospace())
+                            .color(Color::from_hex(0x4ade80)),
+                        crate::input_widgets::TextField::new(
+                            "Enter terminal command...",
+                            draft.binding(),
+                        )
+                        .on_submit(move |_| submit()),
+                        Button::new("Send", submit_btn),
+                    ),
+                ),
+            ),
+        )
+    }
 }

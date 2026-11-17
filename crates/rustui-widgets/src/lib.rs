@@ -3,6 +3,7 @@
 pub mod collections;
 pub mod containers;
 pub mod core_widgets;
+pub mod editor_surface;
 pub mod input_widgets;
 pub mod theme;
 
@@ -10,13 +11,16 @@ pub use collections::{
     LazyVStack, List, ScrollView, Table, TableColumn, Tree, TreeItemData, format_virtual_row_text,
 };
 pub use containers::{
-    Menu, MenuItem, NavigationPage, NavigationStack, Popover, Sheet, SplitView, TabItem, TabView,
-    Toolbar,
+    Alert, AlertButton, CommandItem, CommandPalette, ConfirmationDialog, DisclosureGroup,
+    FileDialog, Menu, MenuItem, NavigationPage, NavigationStack, OutlineGroup, Popover, Sheet,
+    SplitView, StatusBar, TabBar, TabBarItem, TabItem, TabView, Toolbar,
 };
 pub use core_widgets::{
-    Button, Canvas, CustomLayoutView, Divider, Grid, HStack, Image, Shader, Spacer, Text, Toggle,
-    VStack, ZStack,
+    Button, Canvas, CustomLayoutView, Divider, Gauge, Grid, HStack, Image, ProgressView, Shader,
+    Spacer, TerminalLine, TerminalLineTone, TerminalView, Text, Toggle, VStack, ViewThatFits,
+    WidgetViewExt, ZStack,
 };
+pub use editor_surface::{EditorBufferState, EditorSurface};
 pub use input_widgets::{Checkbox, Picker, SecureField, Slider, TextEditor, TextField};
 pub use theme::{ButtonStyle, Font, ListStyle, Theme, ThemeColors, ToggleStyle};
 
@@ -238,6 +242,153 @@ mod tests {
         let png = with_animation(Animation::spring(), || {
             sim.render_png().expect("render demo")
         });
+        assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn v02_widgets_editorsurface_tabbar_palette_progress_theme_work() {
+        use rustui_core::{Cx, KeyCode, Modifiers, State, View, ViewExt};
+        use rustui_platform::HeadlessSimulator;
+        use rustui_text::{
+            DecorationKind, EditorDecoration, FoldRange, GutterDiffKind, LineDiffMarker,
+            SyntaxTokenSpan,
+        };
+
+        let toml = Theme::high_contrast().to_toml_string();
+        let parsed = Theme::from_toml_str(&toml).expect("theme toml roundtrip");
+        assert!(parsed.is_dark);
+        assert_eq!(parsed, Theme::high_contrast());
+        assert!(Theme::light().to_toml_string().contains("is_dark = false"));
+
+        struct Showcase;
+        impl View for Showcase {
+            fn body(self, cx: &mut Cx) -> impl View {
+                let mut initial = EditorBufferState::from_text("fn main() {\n    let x = 1;\n}");
+                initial.syntax_spans = vec![SyntaxTokenSpan {
+                    start_byte: 0,
+                    end_byte: 2,
+                    color: rustui_core::Color::accent(),
+                }];
+                initial.decorations = vec![EditorDecoration {
+                    start_byte: 20,
+                    end_byte: 21,
+                    kind: DecorationKind::InlayHint {
+                        label: ": i32".into(),
+                    },
+                    message: None,
+                }];
+                initial.folds = vec![FoldRange {
+                    start_line: 0,
+                    end_line: 2,
+                    collapsed: false,
+                }];
+                initial.line_diffs = vec![LineDiffMarker {
+                    line: 1,
+                    kind: GutterDiffKind::Modified,
+                }];
+                initial.show_minimap = true;
+                initial.toggle_breakpoint(1);
+
+                let ed: State<EditorBufferState> = cx.state(initial);
+                let tabs = cx.state(vec![
+                    TabBarItem::new("main", "main.rs").pinned(true),
+                    TabBarItem::new("lib", "lib.rs").dirty(true),
+                    TabBarItem::new("mod", "mod.rs"),
+                ]);
+                let active_tab = cx.state(0usize);
+                let palette_open = cx.state(true);
+                let ran_cmd = cx.state(false);
+                let expanded = cx.state(false);
+                let term_lines = cx.state(vec![TerminalLine {
+                    id: 1,
+                    text: "cargo check".into(),
+                    tone: TerminalLineTone::Prompt,
+                }]);
+
+                let ed_for_status = ed;
+                let term_append = term_lines;
+                let ran_set = ran_cmd;
+
+                CommandPalette::new(
+                    palette_open.binding(),
+                    vec![CommandItem::new(
+                        "build",
+                        "Run Cargo Build",
+                        "Ctrl+B",
+                        move || ran_set.set(true),
+                    )],
+                    VStack::new(
+                        8,
+                        (
+                            TabBar::new(tabs.binding(), active_tab.binding()),
+                            HStack::new(
+                                12,
+                                (
+                                    ProgressView::determinate(0.65).label("Indexing"),
+                                    Gauge::new("CPU", 42.0, 0.0, 100.0),
+                                    ViewThatFits::new((
+                                        Text::new("Wide Desktop Layout Title Text"),
+                                        Text::new("Compact"),
+                                    )),
+                                ),
+                            ),
+                            DisclosureGroup::new("Workspace Details", expanded.binding(), || {
+                                Text::new("Expanded info")
+                            }),
+                            EditorSurface::new(ed.binding()).accessibility_label("Code Editor"),
+                            TerminalView::new(term_lines.binding(), move |cmd| {
+                                term_append.update(|v| {
+                                    let id = v.last().map(|l| l.id + 1).unwrap_or(1);
+                                    v.push(TerminalLine {
+                                        id,
+                                        text: format!("ok: {cmd}"),
+                                        tone: TerminalLineTone::Success,
+                                    });
+                                });
+                            }),
+                            StatusBar::new((
+                                Text::new(move || ed_for_status.get().status_summary()),
+                                Spacer::new(),
+                                Text::new("UTF-8"),
+                            )),
+                        ),
+                    ),
+                )
+            }
+        }
+
+        let mut sim = HeadlessSimulator::new(Showcase, Size::new(1024.0, 720.0));
+        sim.step_frame();
+        assert!(sim.find_node_by_label("Command Palette").is_some());
+        let run_btn = sim
+            .find_node_by_label("Run Cargo Build   [Ctrl+B]")
+            .expect("command item");
+        sim.click_node(run_btn);
+        assert!(sim.find_node_by_label("Command Palette").is_none());
+
+        let tab2 = sim.find_node_by_label("lib.rs •").expect("second tab");
+        sim.click_node(tab2);
+        let close3 = sim.find_node_by_label("Close tab 3").expect("close tab 3");
+        sim.click_node(close3);
+        let disc = sim
+            .find_node_by_label("▸ Workspace Details")
+            .expect("disclosure");
+        sim.click_node(disc);
+        assert!(sim.find_node_by_label("Expanded info").is_some());
+
+        let editor_id = sim.find_node_by_label("Code Editor").expect("editor node");
+        sim.click_node(editor_id);
+        sim.type_text("// hi");
+        sim.press_key(
+            KeyCode::ArrowDown,
+            Modifiers {
+                ctrl: true,
+                alt: true,
+                ..Modifiers::NONE
+            },
+        );
+        sim.type_text("!");
+        let png = sim.render_png().expect("render v0.2 showcase");
         assert_eq!(&png[0..8], b"\x89PNG\r\n\x1a\n");
     }
 }

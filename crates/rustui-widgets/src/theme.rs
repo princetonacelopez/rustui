@@ -166,6 +166,119 @@ impl Theme {
         }
     }
 
+    pub fn high_contrast() -> Self {
+        Self {
+            is_dark: true,
+            colors: ThemeColors {
+                primary: Color::WHITE,
+                secondary: Color::from_hex(0xe2e8f0),
+                background: Color::BLACK,
+                surface: Color::from_hex(0x090d16),
+                surface_elevated: Color::from_hex(0x161f30),
+                accent: Color::from_hex(0x60a5fa),
+                on_accent: Color::BLACK,
+                border: Color::WHITE,
+                destructive: Color::from_hex(0xff6b6b),
+                success: Color::from_hex(0x4ade80),
+                warning: Color::from_hex(0xfacc15),
+            },
+            spacing_sm: 6.0,
+            spacing_md: 12.0,
+            spacing_lg: 20.0,
+            radius_sm: 4.0,
+            radius_md: 8.0,
+            radius_lg: 12.0,
+        }
+    }
+
+    /// Serializes this [`Theme`] as a TOML theme document.
+    pub fn to_toml_string(&self) -> String {
+        let hex = |c: Color| -> String {
+            let [r, g, b, _] = c.to_rgba8();
+            format!("#{r:02x}{g:02x}{b:02x}")
+        };
+        format!(
+            "is_dark = {}\nspacing_sm = {:.1}\nspacing_md = {:.1}\nspacing_lg = {:.1}\nradius_sm = {:.1}\nradius_md = {:.1}\nradius_lg = {:.1}\n\n[colors]\nprimary = \"{}\"\nsecondary = \"{}\"\nbackground = \"{}\"\nsurface = \"{}\"\nsurface_elevated = \"{}\"\naccent = \"{}\"\non_accent = \"{}\"\nborder = \"{}\"\ndestructive = \"{}\"\nsuccess = \"{}\"\nwarning = \"{}\"\n",
+            self.is_dark,
+            self.spacing_sm,
+            self.spacing_md,
+            self.spacing_lg,
+            self.radius_sm,
+            self.radius_md,
+            self.radius_lg,
+            hex(self.colors.primary),
+            hex(self.colors.secondary),
+            hex(self.colors.background),
+            hex(self.colors.surface),
+            hex(self.colors.surface_elevated),
+            hex(self.colors.accent),
+            hex(self.colors.on_accent),
+            hex(self.colors.border),
+            hex(self.colors.destructive),
+            hex(self.colors.success),
+            hex(self.colors.warning),
+        )
+    }
+
+    /// Parses a [`Theme`] from a TOML string (`[colors]` with `#rrggbb` values).
+    pub fn from_toml_str(src: &str) -> Result<Self, String> {
+        let mut theme = Self::light();
+        let parse_hex = |s: &str| -> Result<Color, String> {
+            let trimmed = s.trim().trim_matches('"').trim_start_matches('#');
+            if trimmed.len() != 6 {
+                return Err(format!("expected #rrggbb hex color, got '{s}'"));
+            }
+            let val =
+                u32::from_str_radix(trimmed, 16).map_err(|_| format!("invalid hex color '{s}'"))?;
+            Ok(Color::from_hex(val))
+        };
+
+        for raw in src.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim();
+                let v = v.trim();
+                match k {
+                    "is_dark" => theme.is_dark = v == "true",
+                    "spacing_sm" => {
+                        theme.spacing_sm = v.parse::<f32>().map_err(|e| e.to_string())?;
+                    }
+                    "spacing_md" => {
+                        theme.spacing_md = v.parse::<f32>().map_err(|e| e.to_string())?;
+                    }
+                    "spacing_lg" => {
+                        theme.spacing_lg = v.parse::<f32>().map_err(|e| e.to_string())?;
+                    }
+                    "radius_sm" => {
+                        theme.radius_sm = v.parse::<f32>().map_err(|e| e.to_string())?;
+                    }
+                    "radius_md" => {
+                        theme.radius_md = v.parse::<f32>().map_err(|e| e.to_string())?;
+                    }
+                    "radius_lg" => {
+                        theme.radius_lg = v.parse::<f32>().map_err(|e| e.to_string())?;
+                    }
+                    "primary" => theme.colors.primary = parse_hex(v)?,
+                    "secondary" => theme.colors.secondary = parse_hex(v)?,
+                    "background" => theme.colors.background = parse_hex(v)?,
+                    "surface" => theme.colors.surface = parse_hex(v)?,
+                    "surface_elevated" => theme.colors.surface_elevated = parse_hex(v)?,
+                    "accent" => theme.colors.accent = parse_hex(v)?,
+                    "on_accent" => theme.colors.on_accent = parse_hex(v)?,
+                    "border" => theme.colors.border = parse_hex(v)?,
+                    "destructive" => theme.colors.destructive = parse_hex(v)?,
+                    "success" => theme.colors.success = parse_hex(v)?,
+                    "warning" => theme.colors.warning = parse_hex(v)?,
+                    _ => {}
+                }
+            }
+        }
+        Ok(theme)
+    }
+
     pub fn resolve(&self, color: Color) -> Color {
         match color.semantic {
             None => color,

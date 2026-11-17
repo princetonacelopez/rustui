@@ -21,7 +21,6 @@ rustui-render.workspace = true
 rustui-text.workspace = true
 rustui-platform.workspace = true
 rustui-widgets.workspace = true
-clap.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
