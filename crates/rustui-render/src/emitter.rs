@@ -1,4 +1,4 @@
-//! Emits a [`DisplayList`] from the retained UI [`Node`] tree.
+//! Emits a [`DisplayList`] from the retained UI [`rustui_core::Node`] tree.
 
 use std::time::Instant;
 

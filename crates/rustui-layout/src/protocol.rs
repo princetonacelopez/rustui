@@ -162,7 +162,7 @@ impl ChildProxy<'_> {
             .with_inner(|inner| effective_priority(inner, self.node_id))
     }
 
-    /// Returns a child's custom [`LayoutValue`] metadata set via `.layout_value(...)`.
+    /// Returns a child's custom `LayoutValue` metadata set via `.layout_value(...)`.
     pub fn layout_value<T: Clone + 'static>(&self) -> Option<T> {
         self.engine.runtime().with_inner(|inner| {
             inner

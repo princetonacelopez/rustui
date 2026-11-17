@@ -1235,7 +1235,7 @@ impl Runtime {
         }
     }
 
-    /// Allocates a node inheriting the parent's [`Environment`].
+    /// Allocates a node inheriting the parent's [`crate::node::Environment`].
     pub fn alloc_node(&self, kind: crate::node::NodeKind, parent: Option<NodeId>) -> NodeId {
         let mut inner = self.inner.borrow_mut();
         let inherited_env = parent

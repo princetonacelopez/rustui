@@ -389,7 +389,7 @@ pub struct Color {
     pub semantic: Option<SemanticColor>,
 }
 
-/// Semantic color tokens resolved via the active [`Theme`] environment.
+/// Semantic color tokens resolved via the active `Theme` environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemanticColor {
     Primary,

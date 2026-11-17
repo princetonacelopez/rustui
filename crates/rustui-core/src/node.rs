@@ -114,7 +114,7 @@ impl Environment {
     }
 }
 
-/// Metadata map attached to children for custom [`Layout`] containers (`LayoutValue`).
+/// Metadata map attached to children for custom `Layout` containers (`LayoutValue`).
 #[derive(Debug, Clone, Default)]
 pub struct LayoutValueMap {
     values: HashMap<TypeId, Rc<dyn Any>>,

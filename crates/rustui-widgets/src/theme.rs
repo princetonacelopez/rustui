@@ -167,7 +167,7 @@ impl Theme {
 /// Custom button decorator closure `(is_hovered, is_pressed, &Theme) -> (background, foreground)`.
 pub type ButtonDecoratorFn = Rc<dyn Fn(bool, bool, &Theme) -> (Color, Color)>;
 
-/// Visual styling descriptor for [`Button`] subtrees (`ButtonStyle` protocol).
+/// Visual styling descriptor for [`crate::Button`] subtrees (`ButtonStyle` protocol).
 #[derive(Clone)]
 pub struct ButtonStyle {
     pub background: Color,
@@ -231,7 +231,7 @@ impl ButtonStyle {
     }
 }
 
-/// Visual styling descriptor for [`Toggle`] subtrees (`ToggleStyle` protocol).
+/// Visual styling descriptor for [`crate::Toggle`] subtrees (`ToggleStyle` protocol).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToggleStyle {
     pub on_track: Color,
@@ -251,7 +251,7 @@ impl ToggleStyle {
     }
 }
 
-/// Visual styling descriptor for [`List`] subtrees (`ListStyle` protocol).
+/// Visual styling descriptor for [`crate::List`] subtrees (`ListStyle` protocol).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListStyle {
     pub row_background: Color,

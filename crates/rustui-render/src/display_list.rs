@@ -124,7 +124,7 @@ pub struct GlyphRunItem {
     pub color: Color,
 }
 
-/// Narrow display-list command emitted by UI nodes and [`Canvas`] callbacks.
+/// Narrow display-list command emitted by UI nodes and `Canvas` callbacks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DisplayCommand {
     FillRoundedRect {
