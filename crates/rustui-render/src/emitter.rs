@@ -3,12 +3,25 @@
 use std::time::Instant;
 
 use rustui_core::{
-    AccessibilityRole, ContainerKind, DirtyFlags, NodeId, NodeKind, Point, Rect, Runtime,
-    TextNodeData, ThemePalette,
+    AccessibilityRole, ContainerKind, DirtyFlags, FontSpec, FontWeight, HorizontalAlignment,
+    NodeId, NodeKind, Point, Rect, Runtime, TextNodeData, ThemePalette,
 };
 
 use crate::display_list::{BlendMode, DisplayList};
 use crate::resources::ResourceLoader;
+
+enum FloatingOverlay {
+    Badge {
+        rect: Rect,
+        text: String,
+        palette: ThemePalette,
+    },
+    Tooltip {
+        rect: Rect,
+        text: String,
+        palette: ThemePalette,
+    },
+}
 
 /// Callback trait implemented by `rustui-text` (or fallback painters) to emit glyphs for [`TextNodeData`].
 pub trait TextPainter {
@@ -26,6 +39,7 @@ pub fn emit_display_list(
     let start = Instant::now();
     let mut list = DisplayList::new(scale_factor);
     let mut painter = text_painter;
+    let high_contrast = runtime.is_high_contrast();
     let root_palette = runtime
         .with_inner(|inner| {
             inner
@@ -35,6 +49,7 @@ pub fn emit_display_list(
         })
         .unwrap_or_default();
     let mut deferred_overlays = Vec::new();
+    let mut floating_overlays = Vec::new();
 
     runtime.enter(|| {
         emit_node_recursive(
@@ -42,10 +57,12 @@ pub fn emit_display_list(
             root,
             root_palette,
             false,
+            high_contrast,
             resources,
             &mut painter,
             &mut list,
             &mut deferred_overlays,
+            &mut floating_overlays,
         );
         while !deferred_overlays.is_empty() {
             let batch = std::mem::take(&mut deferred_overlays);
@@ -55,13 +72,16 @@ pub fn emit_display_list(
                     overlay_id,
                     overlay_palette,
                     true,
+                    high_contrast,
                     resources,
                     &mut painter,
                     &mut list,
                     &mut deferred_overlays,
+                    &mut floating_overlays,
                 );
             }
         }
+        emit_floating_overlays(&floating_overlays, &mut painter, &mut list);
     });
 
     let elapsed = start.elapsed();
@@ -79,10 +99,12 @@ fn emit_node_recursive(
     node_id: NodeId,
     inherited_palette: ThemePalette,
     allow_overlay_root: bool,
+    high_contrast: bool,
     resources: &mut ResourceLoader,
     text_painter: &mut Option<&mut dyn TextPainter>,
     list: &mut DisplayList,
     deferred_overlays: &mut Vec<(NodeId, ThemePalette)>,
+    floating_overlays: &mut Vec<FloatingOverlay>,
 ) {
     enum LeafEmit {
         None,
@@ -123,7 +145,21 @@ fn emit_node_recursive(
         let node = inner.nodes.get_mut(node_id)?;
         let mut bounds = node.bounds();
         let mut visual = node.visual_props.clone();
+        let tooltip_text = if visual.is_hovered {
+            node.accessibility
+                .hint
+                .as_ref()
+                .filter(|h| !h.is_empty())
+                .cloned()
+        } else {
+            None
+        };
+        let mut has_custom_accent_border = false;
+        let is_control = matches!(&node.kind, NodeKind::Control(_));
         if let NodeKind::Control(ctrl) = &node.kind {
+            if ctrl.is_disabled && visual.opacity >= 0.99 {
+                visual.opacity *= 0.48;
+            }
             let is_editable_focused = node.focus.focused
                 && matches!(ctrl.kind, "textfield" | "texteditor" | "securefield");
             if !ctrl.is_disabled
@@ -153,8 +189,10 @@ fn emit_node_recursive(
                         visual.border.map_or(1.5, |(w, _)| w.max(1.5)),
                         active_palette.accent,
                     ));
+                    has_custom_accent_border = true;
                 } else if is_editable_focused {
                     visual.border = Some((1.75, active_palette.accent));
+                    has_custom_accent_border = true;
                 } else if ctrl.is_hovered
                     && let Some((bw, bc)) = visual.border
                 {
@@ -162,6 +200,14 @@ fn emit_node_recursive(
                     visual.border = Some((bw, resolved_bc.lerp(active_palette.accent, 0.55)));
                 }
             }
+        }
+        if high_contrast
+            && !has_custom_accent_border
+            && (is_control
+                || (visual.background.is_some() && visual.corner_radii.max_radius() > 0.0))
+        {
+            let width = visual.border.map_or(1.5, |(w, _)| w.max(1.5));
+            visual.border = Some((width, active_palette.border));
         }
         let show_focus_ring =
             node.focus.focusable && node.focus.focused && bounds.width > 0.0 && bounds.height > 0.0;
@@ -204,10 +250,12 @@ fn emit_node_recursive(
             leaf,
             active_palette,
             show_focus_ring,
+            tooltip_text,
         ))
     });
 
-    let Some((bounds, visual, children, leaf, palette, show_focus_ring)) = snapshot else {
+    let Some((bounds, visual, children, leaf, palette, show_focus_ring, tooltip_text)) = snapshot
+    else {
         return;
     };
 
@@ -309,10 +357,12 @@ fn emit_node_recursive(
             cid,
             palette,
             allow_overlay_root,
+            high_contrast,
             resources,
             text_painter,
             list,
             deferred_overlays,
+            floating_overlays,
         );
     }
 
@@ -368,9 +418,106 @@ fn emit_node_recursive(
             list.stroke_rounded_rect(ring_rect, r_inner, 2.0, ring_color);
         }
     }
+    if has_area {
+        if let Some(badge_text) = &visual.badge
+            && !badge_text.is_empty()
+        {
+            let pill_h = 18.0_f32;
+            let pill_w = (badge_text.chars().count() as f32 * 7.2 + 12.0).max(18.0);
+            floating_overlays.push(FloatingOverlay::Badge {
+                rect: Rect::new(
+                    bounds.max_x() - pill_w * 0.75,
+                    (bounds.y - 6.0).max(0.0),
+                    pill_w,
+                    pill_h,
+                ),
+                text: badge_text.clone(),
+                palette,
+            });
+        }
+        if let Some(hint) = tooltip_text {
+            let tip_h = 24.0_f32;
+            let tip_w = (hint.chars().count() as f32 * 7.0 + 16.0).clamp(48.0, 320.0);
+            floating_overlays.push(FloatingOverlay::Tooltip {
+                rect: Rect::new(bounds.x, bounds.max_y() + 6.0, tip_w, tip_h),
+                text: hint,
+                palette,
+            });
+        }
+    }
+
     if needs_layer {
         list.pop_layer();
     }
 
     let _ = Point::ZERO;
+}
+
+fn emit_floating_overlays(
+    overlays: &[FloatingOverlay],
+    text_painter: &mut Option<&mut dyn TextPainter>,
+    list: &mut DisplayList,
+) {
+    for overlay in overlays {
+        match overlay {
+            FloatingOverlay::Badge {
+                rect,
+                text,
+                palette,
+            } => {
+                let radii = rustui_core::CornerRadii::all(9.0);
+                list.fill_rounded_rect(*rect, radii, palette.destructive);
+                let data = TextNodeData {
+                    text: text.clone(),
+                    font: FontSpec {
+                        size: 11.0,
+                        weight: FontWeight::Bold,
+                        ..FontSpec::default()
+                    },
+                    color: Some(rustui_core::Color::WHITE),
+                    alignment: HorizontalAlignment::Center,
+                    ..TextNodeData::default()
+                };
+                if let Some(tp) = text_painter.as_deref_mut() {
+                    tp.paint_text(&data, *rect, list);
+                }
+            }
+            FloatingOverlay::Tooltip {
+                rect,
+                text,
+                palette,
+            } => {
+                let radii = rustui_core::CornerRadii::all(6.0);
+                list.draw_box_shadow(
+                    *rect,
+                    6.0,
+                    Point::new(0.0, 2.0),
+                    6.0,
+                    rustui_core::Color::rgba(0.0, 0.0, 0.0, 0.25),
+                );
+                list.fill_rounded_rect(*rect, radii, palette.surface);
+                list.stroke_rounded_rect(*rect, radii, 1.0, palette.border);
+                let text_rect = Rect::new(
+                    rect.x + 8.0,
+                    rect.y + 4.0,
+                    (rect.width - 16.0).max(0.0),
+                    rect.height - 8.0,
+                );
+                let data = TextNodeData {
+                    text: text.clone(),
+                    font: FontSpec {
+                        size: 12.0,
+                        weight: FontWeight::Medium,
+                        ..FontSpec::default()
+                    },
+                    color: Some(palette.primary),
+                    alignment: HorizontalAlignment::Leading,
+                    ..TextNodeData::default()
+                };
+                if let Some(tp) = text_painter.as_deref_mut() {
+                    tp.paint_text(&data, text_rect, list);
+                }
+            }
+        }
+    }
 }

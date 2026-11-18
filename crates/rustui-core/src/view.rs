@@ -1067,6 +1067,32 @@ pub trait ViewExt: View + Sized {
         })
     }
 
+    fn disabled(self, disabled: bool) -> Modified<Self> {
+        Modified::with_post_build(
+            self,
+            |_, _, _| {},
+            move |rt, node| {
+                if disabled {
+                    rt.set_subtree_disabled(node, true);
+                }
+            },
+        )
+    }
+
+    fn help(self, text: impl Into<String>) -> Modified<Self> {
+        let hint = text.into();
+        Modified::new(self, move |n, _, _| {
+            n.accessibility.hint = Some(hint);
+        })
+    }
+
+    fn badge(self, text: impl Into<String>) -> Modified<Self> {
+        let badge = text.into();
+        Modified::new(self, move |n, _, _| {
+            n.visual_props.badge = if badge.is_empty() { None } else { Some(badge) };
+        })
+    }
+
     fn fixed_size(self, horizontal: bool, vertical: bool) -> Modified<Self> {
         Modified::new(self, move |n, _, _| {
             n.layout_props.fixed_horizontal = horizontal;

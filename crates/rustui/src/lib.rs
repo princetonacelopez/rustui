@@ -37,15 +37,16 @@ pub mod prelude {
         TextSpan, TextSystem,
     };
     pub use rustui_widgets::{
-        Alert, AlertButton, Button, ButtonStyle, Canvas, Checkbox, CommandItem, CommandPalette,
-        ConfirmationDialog, CustomLayoutView, DisclosureGroup, Divider, EditorBufferState,
-        EditorSurface, FileDialog, Font, Gauge, Grid, HStack, Image, LazyVStack, List, ListStyle,
-        Menu, MenuItem, NavigationPage, NavigationStack, OutlineGroup, Picker, Popover,
-        ProgressView, ScrollView, SecureField, Shader, Sheet, Slider, Spacer, SplitView, StatusBar,
-        TabBar, TabBarItem, TabItem, TabView, Table, TableColumn, TerminalLine, TerminalLineTone,
-        TerminalView, Text, TextEditor, TextField, Theme, Toggle, ToggleStyle, Toolbar, Tree,
-        TreeItemData, VStack, ViewThatFits, WidgetViewExt, ZStack, format_virtual_row_text, hstack,
-        vstack, zstack,
+        Alert, AlertButton, Button, ButtonStyle, Canvas, Checkbox, ColorPicker, CommandItem,
+        CommandPalette, ConfirmationDialog, ControlSize, CustomLayoutView, DatePicker,
+        DisclosureGroup, Divider, EditorBufferState, EditorSurface, FileDialog, Font, Form, Gauge,
+        Grid, GroupBox, HStack, Image, LabeledContent, LazyVStack, Link, List, ListStyle, Menu,
+        MenuItem, NavigationPage, NavigationStack, OutlineGroup, Picker, PickerStyle, Popover,
+        ProgressView, ScrollView, Section, SecureField, Shader, Sheet, Slider, Spacer, SplitView,
+        StatusBar, Stepper, TabBar, TabBarItem, TabItem, TabView, Table, TableColumn, TerminalLine,
+        TerminalLineTone, TerminalView, Text, TextEditor, TextField, Theme, Toggle, ToggleStyle,
+        Toolbar, Tree, TreeItemData, VStack, ViewThatFits, WidgetViewExt, ZStack,
+        format_virtual_row_text, hstack, vstack, zstack,
     };
 }
 

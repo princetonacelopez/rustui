@@ -476,3 +476,69 @@ impl ListStyle {
         }
     }
 }
+
+/// macOS/SwiftUI-aligned control sizing scale (`ControlSize`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ControlSize {
+    Mini,
+    Small,
+    #[default]
+    Regular,
+    Large,
+}
+
+impl ControlSize {
+    pub fn control_height(self) -> f32 {
+        match self {
+            Self::Mini => 22.0,
+            Self::Small => 26.0,
+            Self::Regular => 34.0,
+            Self::Large => 40.0,
+        }
+    }
+
+    pub fn field_height(self) -> f32 {
+        match self {
+            Self::Mini => 24.0,
+            Self::Small => 28.0,
+            Self::Regular => 36.0,
+            Self::Large => 42.0,
+        }
+    }
+
+    pub fn font_size(self) -> f32 {
+        match self {
+            Self::Mini => 11.0,
+            Self::Small => 12.0,
+            Self::Regular => 14.0,
+            Self::Large => 16.0,
+        }
+    }
+
+    pub fn padding(self) -> Edges {
+        match self {
+            Self::Mini => Edges::symmetric(3.0, 8.0),
+            Self::Small => Edges::symmetric(5.0, 10.0),
+            Self::Regular => Edges::symmetric(7.0, 14.0),
+            Self::Large => Edges::symmetric(9.0, 18.0),
+        }
+    }
+
+    pub fn field_padding(self) -> Edges {
+        match self {
+            Self::Mini => Edges::symmetric(3.0, 6.0),
+            Self::Small => Edges::symmetric(5.0, 8.0),
+            Self::Regular => Edges::symmetric(8.0, 10.0),
+            Self::Large => Edges::symmetric(10.0, 12.0),
+        }
+    }
+}
+
+/// Visual presentation style for `Picker` controls (`PickerStyle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum PickerStyle {
+    #[default]
+    Menu,
+    Segmented,
+    RadioGroup,
+}

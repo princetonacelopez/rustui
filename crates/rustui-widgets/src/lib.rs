@@ -12,8 +12,9 @@ pub use collections::{
 };
 pub use containers::{
     Alert, AlertButton, CommandItem, CommandPalette, ConfirmationDialog, DisclosureGroup,
-    FileDialog, Menu, MenuItem, NavigationPage, NavigationStack, OutlineGroup, Popover, Sheet,
-    SplitView, StatusBar, TabBar, TabBarItem, TabItem, TabView, Toolbar,
+    FileDialog, Form, GroupBox, LabeledContent, Menu, MenuItem, NavigationPage, NavigationStack,
+    OutlineGroup, Popover, Section, Sheet, SplitView, StatusBar, TabBar, TabBarItem, TabItem,
+    TabView, Toolbar,
 };
 pub use core_widgets::{
     Button, Canvas, CustomLayoutView, Divider, Gauge, Grid, HStack, Image, ProgressView, Shader,
@@ -21,8 +22,13 @@ pub use core_widgets::{
     WidgetViewExt, ZStack,
 };
 pub use editor_surface::{EditorBufferState, EditorSurface};
-pub use input_widgets::{Checkbox, Picker, SecureField, Slider, TextEditor, TextField};
-pub use theme::{ButtonStyle, Font, ListStyle, Theme, ThemeColors, ToggleStyle};
+pub use input_widgets::{
+    Checkbox, ColorPicker, DatePicker, Link, Picker, SecureField, Slider, Stepper, TextEditor,
+    TextField,
+};
+pub use theme::{
+    ButtonStyle, ControlSize, Font, ListStyle, PickerStyle, Theme, ThemeColors, ToggleStyle,
+};
 
 #[cfg(test)]
 mod tests {

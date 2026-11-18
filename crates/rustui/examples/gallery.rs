@@ -18,6 +18,11 @@ struct GalleryModel {
     tabs: Vec<TabBarItem>,
     editor: EditorBufferState,
     terminal_lines: Vec<TerminalLine>,
+    picker_style_idx: usize,
+    stepper_count: f32,
+    highlight_color: Color,
+    release_date: String,
+    compact_controls: bool,
 }
 
 fn initial_editor_state() -> EditorBufferState {
@@ -116,9 +121,15 @@ impl View for GalleryApp {
             tabs: vec![
                 TabBarItem::new("editor", "EditorSurface").pinned(true),
                 TabBarItem::new("metrics", "Data & Gauges").dirty(true),
+                TabBarItem::new("macos", "macOS Controls"),
                 TabBarItem::new("terminal", "Terminal & Theme"),
             ],
             editor: initial_editor_state(),
+            picker_style_idx: 0,
+            stepper_count: 3.0,
+            highlight_color: Color::from_hex(0x007AFF),
+            release_date: "2026-11-18".into(),
+            compact_controls: false,
             terminal_lines: vec![
                 TerminalLine {
                     id: 1,
@@ -408,6 +419,71 @@ impl View for GalleryShell {
                             )
                             .alignment(HorizontalAlignment::Leading)
                             .padding(16)
+                        }
+                    })
+                    .case(2usize, {
+                        let t_form = theme_tab.clone();
+                        move || {
+                            Form::new((
+                                Section::new(
+                                    "macOS SwiftUI Controls",
+                                    (
+                                        LabeledContent::new(
+                                            "Layout Mode",
+                                            Picker::new(
+                                                model.picker_style_idx_binding(),
+                                                vec![
+                                                    "List".into(),
+                                                    "Grid".into(),
+                                                    "Inspector".into(),
+                                                ],
+                                            )
+                                            .picker_style(PickerStyle::Segmented),
+                                        ),
+                                        Stepper::new(
+                                            "Retry Limit",
+                                            model.stepper_count_binding(),
+                                            1.0..=10.0,
+                                        ),
+                                        ColorPicker::new(
+                                            "Accent Well",
+                                            model.highlight_color_binding(),
+                                        ),
+                                        DatePicker::new(
+                                            "Release Target",
+                                            model.release_date_binding(),
+                                        ),
+                                    ),
+                                )
+                                .footer("Settings follow macOS control sizing & keyboard rules."),
+                                GroupBox::new(
+                                    "Actions & Documentation",
+                                    HStack::new(
+                                        10,
+                                        (
+                                            Button::new("Save Changes", move || {
+                                                model.set_last_action("Saved macOS form".into());
+                                            })
+                                            .style(ButtonStyle::primary(&t_form))
+                                            .badge("NEW")
+                                            .help("Saves all preferences"),
+                                            Toggle::new(
+                                                "Compact Controls",
+                                                model.compact_controls_binding(),
+                                            ),
+                                            Link::new(
+                                                "SwiftUI Reference",
+                                                "https://developer.apple.com/documentation/swiftui",
+                                            )
+                                            .on_open(
+                                                move |url| {
+                                                    model.set_last_action(format!("Link: {url}"));
+                                                },
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ))
                         }
                     })
                     .default(move || {

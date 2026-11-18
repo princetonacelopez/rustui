@@ -14,7 +14,7 @@ use rustui_core::{
 use rustui_layout::{CustomLayoutBox, Layout};
 use rustui_render::DisplayList;
 
-use crate::theme::{ButtonStyle, Font, Theme, ToggleStyle};
+use crate::theme::{ButtonStyle, ControlSize, Font, PickerStyle, Theme, ToggleStyle};
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut h = DefaultHasher::new();
@@ -288,6 +288,7 @@ impl Button {
 impl Primitive for Button {
     fn build(self, cx: &mut BuildCx) -> NodeId {
         let theme = resolve_theme(cx);
+        let control_size = cx.env::<ControlSize>();
         let style = self
             .style
             .or_else(|| cx.env::<ButtonStyle>())
@@ -302,25 +303,38 @@ impl Primitive for Button {
         let tap_action = self.on_tap.clone();
         let key_action = self.on_tap;
         let disabled = self.disabled;
-        let static_label = match &self.label {
-            TextSource::Static(s) => Some(s.clone()),
-            TextSource::Reactive(_) => None,
+        let (static_label, reactive_fn) = match &self.label {
+            TextSource::Static(s) => (Some(s.clone()), None),
+            TextSource::Reactive(f) => {
+                let init = cx.runtime.enter(|| f());
+                (Some(init), Some(f.clone()))
+            }
+        };
+
+        let padding = control_size.map_or(style.padding, |cs| cs.padding());
+        let min_h = control_size.map_or(
+            if style.background.a <= 0.01 {
+                26.0
+            } else {
+                34.0
+            },
+            |cs| cs.control_height(),
+        );
+        let min_w = if style.background.a <= 0.01 {
+            24.0
+        } else {
+            36.0
         };
 
         cx.runtime.with_inner_mut(|inner| {
             if let Some(n) = inner.nodes.get_mut(node) {
-                n.layout_props.padding = style.padding;
-                n.layout_props.frame = Some(if style.background.a <= 0.01 {
+                n.layout_props.padding = padding;
+                n.layout_props.frame = Some(
                     Frame::new()
-                        .min_width(24.0)
-                        .min_height(26.0)
-                        .alignment(Alignment::CENTER)
-                } else {
-                    Frame::new()
-                        .min_width(36.0)
-                        .min_height(34.0)
-                        .alignment(Alignment::CENTER)
-                });
+                        .min_width(min_w)
+                        .min_height(min_h)
+                        .alignment(Alignment::CENTER),
+                );
                 n.visual_props.background = Some(if disabled {
                     style.background.with_alpha(0.45)
                 } else {
@@ -346,8 +360,23 @@ impl Primitive for Button {
             }
         });
 
+        if let Some(rf) = reactive_fn {
+            cx.runtime.register_node_updater(
+                node,
+                move || rf(),
+                |n, label| {
+                    n.accessibility.label = Some(label);
+                    DirtyFlags::ACCESSIBILITY
+                },
+            );
+        }
+
+        let mut text_font = Font::headline();
+        if let Some(cs) = control_size {
+            text_font.size = cs.font_size();
+        }
         let text_child = Text::new(self.label)
-            .font(Font::headline())
+            .font(text_font)
             .color(style.foreground)
             .build_node(cx);
         cx.runtime.attach_child(node, text_child);
@@ -369,6 +398,7 @@ impl View for Button {
 pub struct Toggle {
     label: String,
     is_on: Binding<bool>,
+    disabled: bool,
 }
 
 impl Toggle {
@@ -376,7 +406,13 @@ impl Toggle {
         Self {
             label: label.into(),
             is_on,
+            disabled: false,
         }
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 }
 
@@ -386,6 +422,7 @@ impl Primitive for Toggle {
         let style = cx
             .env::<ToggleStyle>()
             .unwrap_or_else(|| ToggleStyle::from_theme(&theme));
+        let disabled = self.disabled;
 
         let row = cx.alloc_node(NodeKind::Container(ContainerKind::HStack {
             spacing: 10.0,
@@ -394,6 +431,7 @@ impl Primitive for Toggle {
 
         let switch_node = cx.alloc_node(NodeKind::Control(ControlNodeData {
             kind: "toggle",
+            is_disabled: disabled,
             value_bool: Some(cx.runtime.enter(|| self.is_on.get())),
             ..Default::default()
         }));
@@ -415,24 +453,26 @@ impl Primitive for Toggle {
                     animation: rustui_core::Animation::ease_out(0.14),
                     transition: None,
                 });
-                n.focus.focusable = true;
+                n.focus.focusable = !disabled;
                 n.accessibility.role = AccessibilityRole::Switch;
                 n.accessibility.label = Some(label_str);
-                n.accessibility.supports_click = true;
-                n.accessibility.supports_focus = true;
-                n.accessibility.supports_set_value = true;
-                n.events.on_tap = Some(toggle_fn);
-                n.events.on_key = Some(Rc::new(move |ev| {
-                    if ev.is_down && matches!(ev.key, KeyCode::Space | KeyCode::Enter) {
-                        key_fn();
-                        return true;
-                    }
-                    false
-                }));
-                n.events.on_accessibility_set_value = Some(Rc::new(move |val| {
-                    let parsed = matches!(val.as_str(), "true" | "1" | "on");
-                    set_b.set(parsed);
-                }));
+                n.accessibility.supports_click = !disabled;
+                n.accessibility.supports_focus = !disabled;
+                n.accessibility.supports_set_value = !disabled;
+                if !disabled {
+                    n.events.on_tap = Some(toggle_fn);
+                    n.events.on_key = Some(Rc::new(move |ev| {
+                        if ev.is_down && matches!(ev.key, KeyCode::Space | KeyCode::Enter) {
+                            key_fn();
+                            return true;
+                        }
+                        false
+                    }));
+                    n.events.on_accessibility_set_value = Some(Rc::new(move |val| {
+                        let parsed = matches!(val.as_str(), "true" | "1" | "on");
+                        set_b.set(parsed);
+                    }));
+                }
             }
         });
 
@@ -480,11 +520,13 @@ impl Primitive for Toggle {
         let lbl = Text::new(self.label)
             .color(style.label_color)
             .build_node(cx);
-        cx.runtime.with_inner_mut(|inner| {
-            if let Some(l) = inner.nodes.get_mut(lbl) {
-                l.events.on_tap = Some(lbl_toggle);
-            }
-        });
+        if !disabled {
+            cx.runtime.with_inner_mut(|inner| {
+                if let Some(l) = inner.nodes.get_mut(lbl) {
+                    l.events.on_tap = Some(lbl_toggle);
+                }
+            });
+        }
         cx.runtime.attach_child(row, switch_node);
         cx.runtime.attach_child(row, lbl);
         row
@@ -1089,7 +1131,7 @@ impl<C: ViewSequence> View for ViewThatFits<C> {
     }
 }
 
-/// Aligned `.overlay_aligned` / `.background_aligned` view extension helpers.
+/// Aligned `.overlay_aligned` / `.background_aligned` and SwiftUI environment view helpers.
 pub trait WidgetViewExt: View + Sized {
     fn overlay_aligned<O: View>(self, alignment: Alignment, overlay: O) -> ZStack<(Self, O)> {
         ZStack::new((self, overlay)).alignment(alignment)
@@ -1097,6 +1139,14 @@ pub trait WidgetViewExt: View + Sized {
 
     fn background_aligned<B: View>(self, alignment: Alignment, background: B) -> ZStack<(B, Self)> {
         ZStack::new((background, self)).alignment(alignment)
+    }
+
+    fn control_size(self, size: ControlSize) -> rustui_core::Modified<Self> {
+        self.environment(size)
+    }
+
+    fn picker_style(self, style: PickerStyle) -> rustui_core::Modified<Self> {
+        self.environment(style)
     }
 }
 

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use rustui_core::{
     AccessibilityRole, Alignment, AnyView, Binding, BuildCx, Color, ContainerKind, Cx, DirtyFlags,
     Edges, EmptyView, Frame, HorizontalAlignment, If, NodeId, NodeKind, Point, Primitive, Rect,
-    Size, Transition, VerticalAlignment, View, ViewExt,
+    Size, Transition, VerticalAlignment, View, ViewExt, ViewSequence,
 };
 use rustui_layout::{Children, CustomLayoutBox, Layout};
 use rustui_platform::Platform as _;
@@ -1568,5 +1568,262 @@ impl View for OutlineGroup {
     fn body(self, _cx: &mut Cx) -> impl View {
         let cb = self.on_toggle;
         crate::collections::Tree::new(self.roots, move |id| cb(id))
+    }
+}
+
+/// macOS/SwiftUI-aligned settings and data-entry form container (`Form`).
+#[derive(Debug)]
+pub struct Form<C> {
+    children: C,
+}
+
+impl<C: ViewSequence> Form<C> {
+    pub fn new(children: C) -> Self {
+        Self { children }
+    }
+}
+
+impl<C: ViewSequence> Primitive for Form<C> {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let node = cx.alloc_node(NodeKind::Container(ContainerKind::VStack {
+            spacing: 16.0,
+            alignment: HorizontalAlignment::Leading,
+        }));
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(n) = inner.nodes.get_mut(node) {
+                n.layout_props.padding = Edges::all(16.0);
+                n.layout_props.frame = Some(
+                    Frame::new()
+                        .max_width(f32::INFINITY)
+                        .alignment(Alignment::TOP_LEADING),
+                );
+                n.accessibility.role = AccessibilityRole::Group;
+                n.accessibility.label = Some("Form".to_owned());
+            }
+        });
+        self.children.build_all(cx, node);
+        node
+    }
+}
+
+impl<C: ViewSequence> View for Form<C> {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        EmptyView
+    }
+    fn build_node(self, cx: &mut BuildCx) -> NodeId {
+        Primitive::build(self, cx)
+    }
+}
+
+/// Grouped settings/form section container with header and optional footer (`Section`).
+#[derive(Debug)]
+pub struct Section<C> {
+    header: String,
+    footer: Option<String>,
+    content: C,
+}
+
+impl<C: ViewSequence> Section<C> {
+    pub fn new(header: impl Into<String>, content: C) -> Self {
+        Self {
+            header: header.into(),
+            footer: None,
+            content,
+        }
+    }
+
+    pub fn footer(mut self, footer: impl Into<String>) -> Self {
+        self.footer = Some(footer.into());
+        self
+    }
+}
+
+impl<C: ViewSequence> Primitive for Section<C> {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let theme = resolve_theme(cx);
+        let standard = theme.uses_default_palette();
+        let surface_col = if standard {
+            Color::surface()
+        } else {
+            theme.colors.surface
+        };
+        let border_col = if standard {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
+
+        let outer = cx.alloc_node(NodeKind::Container(ContainerKind::VStack {
+            spacing: 6.0,
+            alignment: HorizontalAlignment::Leading,
+        }));
+        let a11y_label = if self.header.is_empty() {
+            "Section".to_owned()
+        } else {
+            self.header.clone()
+        };
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(n) = inner.nodes.get_mut(outer) {
+                n.layout_props.frame = Some(
+                    Frame::new()
+                        .max_width(f32::INFINITY)
+                        .alignment(Alignment::TOP_LEADING),
+                );
+                n.accessibility.role = AccessibilityRole::Group;
+                n.accessibility.label = Some(a11y_label);
+            }
+        });
+
+        if !self.header.is_empty() {
+            let hdr = Text::new(self.header)
+                .font(rustui_core::FontSpec {
+                    weight: rustui_core::FontWeight::SemiBold,
+                    ..Font::caption()
+                })
+                .color(Color::secondary())
+                .build_node(cx);
+            cx.runtime.attach_child(outer, hdr);
+        }
+
+        let card = cx.alloc_node(NodeKind::Container(ContainerKind::VStack {
+            spacing: 10.0,
+            alignment: HorizontalAlignment::Leading,
+        }));
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(n) = inner.nodes.get_mut(card) {
+                n.layout_props.padding = Edges::all(12.0);
+                n.layout_props.frame = Some(
+                    Frame::new()
+                        .max_width(f32::INFINITY)
+                        .alignment(Alignment::TOP_LEADING),
+                );
+                n.visual_props.background = Some(surface_col);
+                n.visual_props.border = Some((1.0, border_col));
+                n.visual_props.corner_radii = rustui_core::CornerRadii::all(theme.radius_md);
+            }
+        });
+        self.content.build_all(cx, card);
+        cx.runtime.attach_child(outer, card);
+
+        if let Some(footer_text) = self.footer {
+            let ftr = Text::new(footer_text)
+                .font(Font::caption())
+                .color(Color::secondary())
+                .build_node(cx);
+            cx.runtime.attach_child(outer, ftr);
+        }
+
+        outer
+    }
+}
+
+impl<C: ViewSequence> View for Section<C> {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        EmptyView
+    }
+    fn build_node(self, cx: &mut BuildCx) -> NodeId {
+        Primitive::build(self, cx)
+    }
+}
+
+/// macOS SwiftUI-aligned titled card box container (`GroupBox`).
+#[derive(Debug)]
+pub struct GroupBox<C> {
+    label: String,
+    content: C,
+}
+
+impl<C: ViewSequence> GroupBox<C> {
+    pub fn new(label: impl Into<String>, content: C) -> Self {
+        Self {
+            label: label.into(),
+            content,
+        }
+    }
+}
+
+impl<C: ViewSequence> Primitive for GroupBox<C> {
+    fn build(self, cx: &mut BuildCx) -> NodeId {
+        let theme = resolve_theme(cx);
+        let standard = theme.uses_default_palette();
+        let surface_col = if standard {
+            Color::surface()
+        } else {
+            theme.colors.surface
+        };
+        let border_col = if standard {
+            Color::border()
+        } else {
+            theme.colors.border
+        };
+
+        let box_node = cx.alloc_node(NodeKind::Container(ContainerKind::VStack {
+            spacing: 8.0,
+            alignment: HorizontalAlignment::Leading,
+        }));
+        let lbl_str = self.label.clone();
+        cx.runtime.with_inner_mut(|inner| {
+            if let Some(n) = inner.nodes.get_mut(box_node) {
+                n.layout_props.padding = Edges::all(12.0);
+                n.layout_props.frame = Some(
+                    Frame::new()
+                        .max_width(f32::INFINITY)
+                        .alignment(Alignment::TOP_LEADING),
+                );
+                n.visual_props.background = Some(surface_col);
+                n.visual_props.border = Some((1.0, border_col));
+                n.visual_props.corner_radii = rustui_core::CornerRadii::all(theme.radius_md);
+                n.accessibility.role = AccessibilityRole::Group;
+                n.accessibility.label = Some(lbl_str);
+            }
+        });
+        if !self.label.is_empty() {
+            let hdr = Text::new(self.label)
+                .font(Font::headline())
+                .color(Color::primary())
+                .build_node(cx);
+            cx.runtime.attach_child(box_node, hdr);
+        }
+        self.content.build_all(cx, box_node);
+        box_node
+    }
+}
+
+impl<C: ViewSequence> View for GroupBox<C> {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        EmptyView
+    }
+    fn build_node(self, cx: &mut BuildCx) -> NodeId {
+        Primitive::build(self, cx)
+    }
+}
+
+/// Horizontal label-and-control form row (`LabeledContent`).
+#[derive(Debug)]
+pub struct LabeledContent<V> {
+    label: String,
+    content: V,
+}
+
+impl<V: View> LabeledContent<V> {
+    pub fn new(label: impl Into<String>, content: V) -> Self {
+        Self {
+            label: label.into(),
+            content,
+        }
+    }
+}
+
+impl<V: View> View for LabeledContent<V> {
+    fn body(self, _cx: &mut Cx) -> impl View {
+        HStack::new(
+            12,
+            (
+                Text::new(self.label).color(Color::primary()),
+                Spacer::new(),
+                self.content,
+            ),
+        )
+        .alignment(VerticalAlignment::Center)
     }
 }

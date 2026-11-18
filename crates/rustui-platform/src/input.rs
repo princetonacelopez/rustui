@@ -73,6 +73,18 @@ impl HitTester {
     }
 }
 
+fn is_disabled_node_or_ancestor(runtime: &Runtime, node_id: NodeId) -> bool {
+    let chain = HitTester::ancestor_chain(runtime, node_id);
+    runtime.with_inner(|inner| {
+        chain.into_iter().any(|id| {
+            inner
+                .nodes
+                .get(id)
+                .is_some_and(|n| matches!(&n.kind, NodeKind::Control(c) if c.is_disabled))
+        })
+    })
+}
+
 fn collect_popover_overlays(inner: &RuntimeInner, node_id: NodeId, out: &mut Vec<NodeId>) {
     let Some(node) = inner.nodes.get(node_id) else {
         return;
@@ -483,6 +495,11 @@ impl GestureRecognizer {
                 self.is_dragging = false;
 
                 if let Some(target) = hit {
+                    if is_disabled_node_or_ancestor(runtime, target) {
+                        self.captured_node = None;
+                        focus.set_focus(runtime, None);
+                        return;
+                    }
                     // Focus nearest focusable ancestor (or self).
                     let chain = HitTester::ancestor_chain(runtime, target);
                     let focus_target = chain.iter().copied().find(|&id| {
@@ -641,13 +658,16 @@ impl GestureRecognizer {
         event: KeyEvent,
     ) -> bool {
         if let Some(focused) = focus.focused_node() {
-            for id in HitTester::ancestor_chain(runtime, focused) {
-                let cb = runtime
-                    .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_key.clone()));
-                if let Some(f) = cb {
-                    let handled = runtime.enter(|| f(event.clone()));
-                    if handled {
-                        return true;
+            if !is_disabled_node_or_ancestor(runtime, focused) {
+                for id in HitTester::ancestor_chain(runtime, focused) {
+                    let cb = runtime.with_inner(|inner| {
+                        inner.nodes.get(id).and_then(|n| n.events.on_key.clone())
+                    });
+                    if let Some(f) = cb {
+                        let handled = runtime.enter(|| f(event.clone()));
+                        if handled {
+                            return true;
+                        }
                     }
                 }
             }
@@ -684,6 +704,9 @@ impl GestureRecognizer {
         let Some(focused) = focus.focused_node() else {
             return;
         };
+        if is_disabled_node_or_ancestor(runtime, focused) {
+            return;
+        }
         let cb = runtime.with_inner(|inner| {
             inner
                 .nodes
@@ -699,6 +722,9 @@ impl GestureRecognizer {
         let Some(focused) = focus.focused_node() else {
             return;
         };
+        if is_disabled_node_or_ancestor(runtime, focused) {
+            return;
+        }
         let cb = runtime.with_inner(|inner| {
             inner
                 .nodes
@@ -718,6 +744,13 @@ impl GestureRecognizer {
             let mut found_control = false;
             for &id in &chain {
                 if let Some(n) = inner.nodes.get_mut(id) {
+                    let node_disabled = matches!(&n.kind, NodeKind::Control(c) if c.is_disabled);
+                    if !node_disabled && n.visual_props.is_hovered != hovered {
+                        n.visual_props.is_hovered = hovered;
+                        if n.accessibility.hint.is_some() {
+                            dirty_nodes.push(id);
+                        }
+                    }
                     if !found_control
                         && let NodeKind::Control(c) = &mut n.kind
                         && !c.is_disabled
@@ -726,7 +759,7 @@ impl GestureRecognizer {
                         found_control = true;
                         dirty_nodes.push(id);
                     }
-                    if let Some(cb) = &n.events.on_hover {
+                    if !node_disabled && let Some(cb) = &n.events.on_hover {
                         out.push(cb.clone());
                     }
                 }
@@ -759,6 +792,9 @@ impl GestureRecognizer {
     }
 
     fn dispatch_raw_pointer(&self, runtime: &Runtime, node_id: NodeId, event: PointerEvent) {
+        if is_disabled_node_or_ancestor(runtime, node_id) {
+            return;
+        }
         for id in HitTester::ancestor_chain(runtime, node_id) {
             let cb = runtime.with_inner(|inner| {
                 inner
@@ -773,6 +809,9 @@ impl GestureRecognizer {
     }
 
     fn dispatch_drag(&self, runtime: &Runtime, node_id: NodeId, event: DragEvent) {
+        if is_disabled_node_or_ancestor(runtime, node_id) {
+            return;
+        }
         for id in HitTester::ancestor_chain(runtime, node_id) {
             let cb = runtime
                 .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_drag.clone()));
@@ -784,6 +823,9 @@ impl GestureRecognizer {
     }
 
     fn dispatch_tap(&self, runtime: &Runtime, node_id: NodeId) {
+        if is_disabled_node_or_ancestor(runtime, node_id) {
+            return;
+        }
         for id in HitTester::ancestor_chain(runtime, node_id) {
             let cb = runtime
                 .with_inner(|inner| inner.nodes.get(id).and_then(|n| n.events.on_tap.clone()));
@@ -795,6 +837,9 @@ impl GestureRecognizer {
     }
 
     fn dispatch_double_tap(&self, runtime: &Runtime, node_id: NodeId) {
+        if is_disabled_node_or_ancestor(runtime, node_id) {
+            return;
+        }
         for id in HitTester::ancestor_chain(runtime, node_id) {
             let cb = runtime.with_inner(|inner| {
                 inner
@@ -810,6 +855,9 @@ impl GestureRecognizer {
     }
 
     fn dispatch_long_press(&self, runtime: &Runtime, node_id: NodeId) {
+        if is_disabled_node_or_ancestor(runtime, node_id) {
+            return;
+        }
         for id in HitTester::ancestor_chain(runtime, node_id) {
             let cb = runtime.with_inner(|inner| {
                 inner

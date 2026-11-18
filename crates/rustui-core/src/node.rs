@@ -487,6 +487,8 @@ pub struct VisualProps {
     pub shadow: Option<BoxShadow>,
     pub clip_to_bounds: bool,
     pub hidden: bool,
+    pub badge: Option<String>,
+    pub is_hovered: bool,
 }
 
 impl Default for VisualProps {
@@ -499,6 +501,8 @@ impl Default for VisualProps {
             shadow: None,
             clip_to_bounds: false,
             hidden: false,
+            badge: None,
+            is_hovered: false,
         }
     }
 }

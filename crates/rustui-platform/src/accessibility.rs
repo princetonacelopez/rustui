@@ -84,8 +84,23 @@ impl AccessKitBridge {
             return false;
         }
         let node_id = from_ak_id(req.target_node);
-        let exists = runtime.with_inner(|inner| inner.nodes.contains_key(node_id));
-        if !exists {
+        let is_missing_or_disabled = runtime.with_inner(|inner| {
+            if !inner.nodes.contains_key(node_id) {
+                return true;
+            }
+            let mut cur = Some(node_id);
+            while let Some(id) = cur {
+                let Some(n) = inner.nodes.get(id) else {
+                    break;
+                };
+                if matches!(&n.kind, NodeKind::Control(c) if c.is_disabled) {
+                    return true;
+                }
+                cur = n.parent;
+            }
+            false
+        });
+        if is_missing_or_disabled {
             return false;
         }
 
@@ -257,20 +272,28 @@ fn collect_ak_nodes(inner: &RuntimeInner, node_id: NodeId, out: &mut Vec<(AkNode
         });
     }
 
-    if node.accessibility.supports_click || node.events.on_tap.is_some() {
-        ak.add_action(Action::Click);
-    }
-    if node.accessibility.supports_focus || node.focus.focusable {
-        ak.add_action(Action::Focus);
-    }
-    if node.accessibility.supports_set_value || node.events.on_accessibility_set_value.is_some() {
-        ak.add_action(Action::SetValue);
-    }
-    if node.accessibility.supports_increment || node.events.on_accessibility_increment.is_some() {
-        ak.add_action(Action::Increment);
-    }
-    if node.accessibility.supports_decrement || node.events.on_accessibility_decrement.is_some() {
-        ak.add_action(Action::Decrement);
+    let is_disabled = matches!(&node.kind, NodeKind::Control(c) if c.is_disabled);
+    if is_disabled {
+        ak.set_disabled();
+    } else {
+        if node.accessibility.supports_click || node.events.on_tap.is_some() {
+            ak.add_action(Action::Click);
+        }
+        if node.accessibility.supports_focus || node.focus.focusable {
+            ak.add_action(Action::Focus);
+        }
+        if node.accessibility.supports_set_value || node.events.on_accessibility_set_value.is_some()
+        {
+            ak.add_action(Action::SetValue);
+        }
+        if node.accessibility.supports_increment || node.events.on_accessibility_increment.is_some()
+        {
+            ak.add_action(Action::Increment);
+        }
+        if node.accessibility.supports_decrement || node.events.on_accessibility_decrement.is_some()
+        {
+            ak.add_action(Action::Decrement);
+        }
     }
     if !node.accessibility.custom_action_names.is_empty() {
         ak.add_action(Action::CustomAction);

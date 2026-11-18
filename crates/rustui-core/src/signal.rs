@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use slotmap::{SlotMap, new_key_type};
 
-use crate::node::{DirtyFlags, ForEachRebuilderFn, Node, NodeBuilderFn, NodeId, SwitchBuilderFn};
+use crate::node::{
+    DirtyFlags, ForEachRebuilderFn, Node, NodeBuilderFn, NodeId, NodeKind, SwitchBuilderFn,
+};
 use crate::scheduler::{AnimProperty, AnimValue, Scheduler, current_animation};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
@@ -1722,6 +1724,36 @@ impl Runtime {
                 n.env.insert(value.clone());
                 queue.extend(n.children.iter().copied());
             }
+        }
+    }
+
+    /// Recursively sets the disabled state across `root` and all descendant control nodes.
+    pub fn set_subtree_disabled(&self, root: NodeId, disabled: bool) {
+        let mut inner = self.inner.borrow_mut();
+        let mut queue = vec![root];
+        let mut dirty_nodes = Vec::new();
+        while let Some(id) = queue.pop() {
+            if let Some(n) = inner.nodes.get_mut(id) {
+                if let NodeKind::Control(c) = &mut n.kind {
+                    c.is_disabled = disabled;
+                    if disabled {
+                        c.is_hovered = false;
+                        c.is_pressed = false;
+                        n.focus.focusable = false;
+                        n.focus.focused = false;
+                    } else {
+                        n.focus.focusable = n.accessibility.supports_focus;
+                    }
+                    dirty_nodes.push(id);
+                }
+                if disabled {
+                    n.visual_props.is_hovered = false;
+                }
+                queue.extend(n.children.iter().copied());
+            }
+        }
+        for id in dirty_nodes {
+            inner.mark_dirty(id, DirtyFlags::PAINT | DirtyFlags::ACCESSIBILITY);
         }
     }
 
